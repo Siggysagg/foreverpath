@@ -1,9 +1,25 @@
 local _, NS = ...
 local U = {}
 NS.UI = U
-local accent = {0.30, 0.72, 1.00}
-local muted = {0.64, 0.70, 0.78}
-local border = {0.18, 0.27, 0.38}
+-- Design tokens: every color the UI renders comes from this one table (UPGRADE_PLAN spor D).
+U.theme = {
+    accent = {0.30, 0.72, 1.00}, muted = {0.64, 0.70, 0.78}, border = {0.18, 0.27, 0.38}, text = {0.90, 0.93, 0.98},
+    green = {0.37, 0.84, 0.55}, red = {0.88, 0.42, 0.42}, yellow = {0.93, 0.78, 0.36}, gray = {0.58, 0.63, 0.70},
+}
+-- Verdict colors: the green/red pair also differs in lightness so hue alone never carries the meaning.
+U.theme.verdict = {
+    ["Do next"] = U.theme.accent, ["Then"] = U.theme.gray, ["Optional"] = U.theme.gray, ["Ready when you are"] = U.theme.gray,
+    ["Side quest"] = U.theme.green, ["Upgrade reward"] = U.theme.green, ["Opens a chain"] = U.theme.accent,
+    ["In your log"] = U.theme.yellow, ["Skip"] = U.theme.red, ["Waiting"] = U.theme.yellow,
+    ["Higher stat score"] = U.theme.green, ["No stat gain"] = U.theme.gray, ["Cannot use"] = U.theme.red,
+    ["Manual comparison"] = U.theme.gray, ["No stat comparison"] = U.theme.gray, ["Inspect"] = U.theme.accent,
+    ["Waiting for data"] = U.theme.yellow, ["Waiting for equipped data"] = U.theme.yellow,
+}
+local accent, muted, border = U.theme.accent, U.theme.muted, U.theme.border
+local function verdictColor(verdict)
+    local c = U.theme.verdict[verdict] or U.theme.accent
+    return c[1], c[2], c[3]
+end
 U.panels = {}
 
 local function opacity() return tonumber(NS.settings and NS.settings.opacity) or 0.85 end
@@ -29,7 +45,7 @@ local function label(parent, text, size, x, y, width)
     f:SetPoint("TOPLEFT", x, y)
     f:SetWidth(width)
     f:SetJustifyH("LEFT")
-    f:SetTextColor(0.90, 0.93, 0.98)
+    f:SetTextColor(unpack(U.theme.text))
     f:SetText(text)
     return f
 end
@@ -88,17 +104,27 @@ function U.Create()
     local stripe = f:CreateTexture(nil,"ARTWORK"); stripe:SetPoint("TOPLEFT",1,-1); stripe:SetSize(738,3); stripe:SetColorTexture(unpack(accent))
     label(f,"FOREVERPATH",22,24,-24,440)
     U.subtitle = label(f,"Your next step, explained.",12,24,-54,500); U.subtitle:SetTextColor(unpack(muted))
-    button(f,"Setup",470,-20,90,function() U.Setup() end)
-    button(f,"Diagnostics",568,-20,106,function() U.Diagnostics() end)
-    button(f,"X",682,-20,34,function() f:Hide() end)
+    button(f,"Setup",398,-20,90,function() U.Setup() end)
+    button(f,"Settings",494,-20,88,function() U.Settings() end)
+    button(f,"Diagnostics",588,-20,110,function() U.Diagnostics() end)
+    button(f,"X",704,-20,34,function() f:Hide() end)
     U.banner = label(f,"",13,24,-88,690)
     U.context = label(f,"",12,24,-111,690); U.context:SetTextColor(unpack(muted))
     U.profile = button(f,"Choose profile",24,-138,230,function() NS.CycleProfile() end)
     U.goal = button(f,"Playstyle: Balanced",266,-138,220,function() NS.CycleStyle() end)
     button(f,"Compact",498,-138,106,function() U.ToggleCompact() end)
     U.refresh = button(f,"Refresh",616,-138,100,function() NS.Refresh() end)
+    -- Route position: label + fill bar between the controls and the card list.
+    U.progressLabel = label(f,"",11,24,-170,664); U.progressLabel:SetTextColor(unpack(muted))
+    U.progress = CreateFrame("Frame",nil,f)
+    U.progress:SetPoint("TOPLEFT",24,-184); U.progress:SetSize(664,6)
+    U.progress.background = U.progress:CreateTexture(nil,"BACKGROUND")
+    U.progress.background:SetAllPoints(); U.progress.background:SetColorTexture(0.05,0.08,0.12,0.9)
+    U.progress.fill = U.progress:CreateTexture(nil,"ARTWORK")
+    U.progress.fill:SetPoint("TOPLEFT"); U.progress.fill:SetHeight(6); U.progress.fill:SetTexture(unpack(accent))
+    U.progress:Hide()
     local scroll = CreateFrame("ScrollFrame",nil,f,"UIPanelScrollFrameTemplate")
-    scroll:SetPoint("TOPLEFT",24,-180); scroll:SetPoint("BOTTOMRIGHT",-40,40)
+    scroll:SetPoint("TOPLEFT",24,-198); scroll:SetPoint("BOTTOMRIGHT",-40,40)
     U.child = CreateFrame("Frame",nil,scroll); U.child:SetSize(664,1); scroll:SetScrollChild(U.child)
     U.scroll, U.cards = scroll, {}
     local meta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
@@ -111,9 +137,12 @@ end
 local function card(index)
     if U.cards[index] then return U.cards[index] end
     local f = panel(U.child,nil,664,110,0.7)
-    f.title = label(f,"",15,16,-12,440)
-    f.badge = label(f,"",11,458,-14,190); f.badge:SetJustifyH("RIGHT"); f.badge:SetTextColor(unpack(accent))
-    f.body = label(f,"",12,16,-38,520); f.body:SetJustifyV("TOP")
+    f.icon = f:CreateTexture(nil,"ARTWORK")
+    f.icon:SetSize(34,34); f.icon:SetPoint("TOPLEFT",12,-10)
+    f.icon:SetTexCoord(0.08,0.92,0.08,0.92); f.icon:Hide()
+    f.title = label(f,"",15,54,-12,400)
+    f.badge = label(f,"",11,458,-14,190); f.badge:SetJustifyH("RIGHT")
+    f.body = label(f,"",12,54,-38,480); f.body:SetJustifyV("TOP")
     f.way = button(f,"Show way",548,-38,100,function() if f.row then NS.Nav.Pin(f.row) end end, 24)
     f:EnableMouse(true)
     f:SetScript("OnEnter",function(self)
@@ -139,16 +168,41 @@ function U.Render(state)
     U.goal.title:SetText("Playstyle: " .. (NS.Route.labels[NS.settings.style] or "Balanced"))
     U.goal:SetEnabled(true)
     local rows = state.rows or {}
+    local stepRow
+    for _, row in ipairs(rows) do
+        if row.stepTotal and row.stepTotal > 0 then stepRow = row break end
+    end
+    if stepRow then
+        U.progress:Show()
+        U.progressLabel:SetText(string.format("Route: %s — step %d of %d", stepRow.guideName or "?", stepRow.stepIndex or 0, stepRow.stepTotal))
+        U.progress.fill:SetWidth(664 * math.min(1, math.max(0, (stepRow.stepIndex or 1) / stepRow.stepTotal)))
+    else
+        U.progress:Hide()
+        U.progressLabel:SetText("")
+    end
     local y = 0
     for i = 1, math.max(1,#rows) do
         local row = rows[i]
         local c = card(i)
         c.title:SetText(row and row.title or "Ready when you are")
         c.badge:SetText(row and row.verdict or "Waiting")
+        c.badge:SetTextColor(verdictColor(row and row.verdict or "Waiting"))
+        c.title:SetTextColor(unpack(row and row.verdict == "Skip" and U.theme.muted or U.theme.text))
         c.body:SetText(row and table.concat(row.reasons or {},"\n") or state.message or "No suggestions yet.")
         c.link = row and row.link or nil
         c.row = row
         if row and row.target then c.way:Show() else c.way:Hide() end
+        -- The item icon (when known) sits left of the text; without one the text keeps the full width.
+        local icon = row and (row.icon or row.texture)
+        if icon and icon ~= "" then
+            c.icon:SetTexture(icon); c.icon:Show()
+            c.title:ClearAllPoints(); c.title:SetPoint("TOPLEFT",54,-12); c.title:SetWidth(400)
+            c.body:ClearAllPoints(); c.body:SetPoint("TOPLEFT",54,-38); c.body:SetWidth(480)
+        else
+            c.icon:Hide()
+            c.title:ClearAllPoints(); c.title:SetPoint("TOPLEFT",16,-12); c.title:SetWidth(440)
+            c.body:ClearAllPoints(); c.body:SetPoint("TOPLEFT",16,-38); c.body:SetWidth(520)
+        end
         -- Cards grow with their explanation instead of clipping it.
         local textHeight = c.body.GetStringHeight and c.body:GetStringHeight() or 56
         local height = 50 + math.max(28, textHeight)
@@ -164,6 +218,14 @@ function U.Render(state)
     U.scroll:SetVerticalScroll(math.min(offset,math.max(0,U.child:GetHeight()-U.scroll:GetHeight())))
     if U.hud then
         local first = rows[1]
+        local hudIcon = first and (first.icon or first.texture)
+        if hudIcon and hudIcon ~= "" then
+            U.hud.icon:SetTexture(hudIcon); U.hud.icon:Show()
+            U.hud.text:ClearAllPoints(); U.hud.text:SetPoint("TOPLEFT",40,-12); U.hud.text:SetWidth(198)
+        else
+            U.hud.icon:Hide()
+            U.hud.text:ClearAllPoints(); U.hud.text:SetPoint("TOPLEFT",14,-12); U.hud.text:SetWidth(236)
+        end
         local text = first and (first.title .. "\n" .. ((first.reasons or {})[1] or first.verdict or "")) or state.message or "No suggestion"
         if U.hud.lastText ~= text then
             U.hud.text:SetText(text)
@@ -185,6 +247,9 @@ function U.Compact(show)
         draggable(h, "compactPosition")
         if Minimap then U.Restore(h, "compactPosition", "TOP", Minimap, "BOTTOM", 0, -18)
         else U.Restore(h, "compactPosition", "TOP", UIParent, "TOP", 0, -120) end
+        h.icon = h:CreateTexture(nil,"ARTWORK")
+        h.icon:SetSize(22,22); h.icon:SetPoint("TOPLEFT",10,-10)
+        h.icon:SetTexCoord(0.08,0.92,0.08,0.92); h.icon:Hide()
         h.text = label(h,"",12,14,-12,236); h.text:SetHeight(56); h.text:SetJustifyV("TOP")
         h.dismiss = button(h,"Hide",254,-8,44,function() local row = U.lastState and U.lastState.rows and U.lastState.rows[1]; if row then NS.DismissTip(row) end end, 22)
         h.close = button(h,"X",302,-8,22,function() U.Compact(false) end, 22)
@@ -244,4 +309,101 @@ function U.Diagnostics()
         scroll:SetScrollChild(edit)
     end
     U.report.edit:SetText(NS.Client.Diagnostics()); U.report:Show(); U.report.edit:SetFocus(); U.report.edit:HighlightText()
+end
+
+-- Settings panel: every /fp setting reachable without slash. Controls call the same
+-- NS.SetStyle / NS.UI.SetOpacity functions as the slash commands (one source of truth).
+local STYLE_LABELS = { speed = "Speedrun", balanced = "Balanced", gear = "Gear first", story = "Story" }
+
+function U.SyncSettings(f)
+    for style, b in pairs(f.styles) do
+        local active = NS.settings.style == style
+        b.title:SetTextColor(active and unpack(U.theme.accent) or unpack(U.theme.muted))
+    end
+    local _, class
+    if UnitClass then _, class = UnitClass("player") end
+    local specs = NS.Engine.SpecsFor(class or "", UnitLevel and UnitLevel("player") or 0)
+    for _, b in ipairs(f.specButtons or {}) do b:Hide() end
+    f.specButtons = {}
+    if #specs > 0 then
+        f.specLabel:SetText("Spec (stat weights): " .. (#specs + 1) .. " choices")
+        for i, spec in ipairs(specs) do
+            local b = button(f, spec, 22 + ((i - 1) % 4) * 108, -232 - math.floor((i - 1) / 4) * 32, 104, function()
+                NS.SetSpec(spec); U.SyncSettings(f)
+            end, 26)
+            local active = string.lower(NS.settings.spec or "") == string.lower(spec)
+            b.title:SetTextColor(active and unpack(U.theme.accent) or unpack(U.theme.muted))
+            f.specButtons[#f.specButtons + 1] = b
+        end
+    else
+        f.specLabel:SetText("Spec (stat weights): no imported specs for your class")
+    end
+    local anySpec = #specs == 0 or string.lower(NS.settings.spec or "") == ""
+    f.autoSpec.title:SetTextColor(anySpec and unpack(U.theme.accent) or unpack(U.theme.muted))
+    f.arrow.title:SetText("Arrow: " .. (NS.settings.arrow == false and "off" or "on"))
+    f.compact.title:SetText("Tips card: " .. (NS.settings.compact == false and "off" or "on"))
+    f.opacityValue:SetText(tostring(math.floor((NS.settings.opacity or 0.85) * 100 + 0.5)) .. "%")
+    f.throttleValue:SetText(tostring(NS.settings.tipThrottleSeconds or 10) .. "s")
+end
+
+function U.Settings()
+    if not U.settings then
+        local f = panel(UIParent,"ForeverPathSettings",480,470)
+        U.settings = f
+        f:SetFrameStrata("FULLSCREEN_DIALOG"); f:SetPoint("CENTER"); f:SetClampedToScreen(true)
+        draggable(f, "settingsPosition")
+        table.insert(UISpecialFrames,"ForeverPathSettings")
+        label(f,"Settings",18,22,-20,300)
+        local hint = label(f,"Everything the slash commands do, without the slash.",11,22,-44,380)
+        hint:SetTextColor(unpack(muted))
+        button(f,"X",430,-14,30,function() f:Hide() end)
+        label(f,"Playstyle",13,22,-76,240)
+        f.styles = {}
+        for i, style in ipairs(NS.Route.order) do
+            local b = button(f, STYLE_LABELS[style] or style, 22 + (i - 1) * 108, -98, 104, function()
+                NS.SetStyle(style); U.SyncSettings(f)
+            end)
+            f.styles[style] = b
+        end
+        f.specLabel = label(f,"",12,22,-140,436); f.specLabel:SetTextColor(unpack(muted))
+        f.autoSpec = button(f,"Automatic",22,-160,104,function()
+            NS.settings.spec = nil; NS.Refresh(); U.SyncSettings(f)
+        end, 26)
+        label(f,"Display",13,22,-200,240)
+        f.arrow = button(f,"Arrow: on",22,-222,104,function()
+            NS.settings.arrow = NS.settings.arrow == false
+            NS.Refresh(); U.SyncSettings(f)
+        end, 26)
+        f.compact = button(f,"Tips card: on",134,-222,104,function()
+            U.ToggleCompact(); U.SyncSettings(f)
+        end, 26)
+        label(f,"Opacity",12,258,-214,100)
+        f.opacityMinus = button(f,"-",246,-222,22,function()
+            U.SetOpacity(math.max(0.30, (NS.settings.opacity or 0.85) - 0.10)); U.SyncSettings(f)
+        end, 26)
+        f.opacityValue = label(f,"85%",12,272,-214,60)
+        f.opacityPlus = button(f,"+",330,-222,22,function()
+            U.SetOpacity(math.min(1.0, (NS.settings.opacity or 0.85) + 0.10)); U.SyncSettings(f)
+        end, 26)
+        label(f,"Tip delay",12,364,-214,100)
+        f.throttleMinus = button(f,"-",352,-222,22,function()
+            NS.settings.tipThrottleSeconds = math.max(0, (tonumber(NS.settings.tipThrottleSeconds) or 10) - 5)
+            U.SyncSettings(f)
+        end, 26)
+        f.throttleValue = label(f,"10s",12,378,-214,44)
+        f.throttlePlus = button(f,"+",430,-222,22,function()
+            NS.settings.tipThrottleSeconds = math.min(60, (tonumber(NS.settings.tipThrottleSeconds) or 10) + 5)
+            U.SyncSettings(f)
+        end, 26)
+        label(f,"Positions",13,22,-266,240)
+        button(f,"Reset all window positions",22,-288,220,function()
+            NS.ResetPositions(); U.SyncSettings(f)
+        end, 26)
+        local meta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
+        local version = tostring(meta and meta("ForeverPath", "Version") or "")
+        local sources = label(f,"ForeverPath " .. version .. " | Route: RestedXP | Quests: AllTheThings",11,22,-444,436)
+        sources:SetTextColor(unpack(muted))
+    end
+    U.SyncSettings(U.settings)
+    fadeIn(U.settings)
 end

@@ -29,6 +29,44 @@ function C.Request(itemID)
     C.requested[itemID] = true
     call(api(C_Item, "RequestLoadItemDataByID"), itemID)
 end
+-- Objective progress ("Kolkar 3/5") for a quest in the log. Classic Era 1.15 documents
+-- C_QuestLog.GetQuestObjectives; on a client without it this returns nil and cards stay as they are.
+function C.Objectives(questID)
+    local get = api(C_QuestLog, "GetQuestObjectives")
+    if type(get) ~= "function" or not questID then return nil end
+    local ok, objectives = pcall(get, questID)
+    if not ok or type(objectives) ~= "table" then
+        if not ok then C.errors.last = tostring(objectives) end
+        return nil
+    end
+    return #objectives > 0 and objectives or nil
+end
+-- Pure: one readable line from client objective records. Counted goals show "text done/required";
+-- goals without a count (progress bars, flags) show their text alone.
+function C.FormatObjectives(objectives)
+    if type(objectives) ~= "table" then return nil end
+    local parts = {}
+    for _, objective in ipairs(objectives) do
+        if type(objective) == "table" and objective.text then
+            local required = tonumber(objective.numRequired) or 0
+            if required > 0 then
+                parts[#parts + 1] = string.format("%s %d/%d", tostring(objective.text), tonumber(objective.numFulfilled) or 0, required)
+            else
+                parts[#parts + 1] = tostring(objective.text)
+            end
+        end
+    end
+    if #parts == 0 then return nil end
+    return table.concat(parts, ", ")
+end
+-- Texture for a reward we only know by item ID (imported data); asks the client to load
+-- missing item data so GET_ITEM_INFO_RECEIVED triggers the next refresh with the texture.
+function C.ItemTexture(itemID)
+    if not itemID then return nil end
+    local _, _, _, _, _, _, _, _, _, texture = call(api(C_Item, "GetItemInfo"), itemID)
+    if type(texture) ~= "string" and type(texture) ~= "number" then C.Request(itemID) end
+    return texture or nil
+end
 function C.ReadItem(link)
     if not link then return nil end
     local name, _, _, _, _, _, _, _, location, texture = call(api(C_Item, "GetItemInfo"), link)
@@ -181,6 +219,13 @@ function C.NextQuests(state, profile)
         local title = call(titleFor, row.questID)
         if type(title) == "string" and title ~= "" then row.title = (verb[row.action] or "") .. title
         else call(api(C_QuestLog, "RequestLoadQuestByID"), row.questID) end  -- QUEST_DATA_LOAD_RESULT refreshes
+        row.objectives = C.Objectives(row.questID)
+        if row.objectives then
+            local line = C.FormatObjectives(row.objectives)
+            if line then table.insert(row.reasons, 1, line) end
+        end
+        row.iconItemID = row.bestReward and row.bestReward.itemID or nil
+        row.icon = row.iconItemID and C.ItemTexture(row.iconItemID) or row.texture or nil
         row.slotIndexes = {}
     end
     state.rows = rows
@@ -205,6 +250,7 @@ function C.Diagnostics()
         { "GetQuestItemLink", GetQuestItemLink }, { "GetQuestItemInfo", GetQuestItemInfo },
         { "GetNumQuestChoices", GetNumQuestChoices }, { "GetNumQuestRewards", GetNumQuestRewards },
         { "GetInventoryItemLink", GetInventoryItemLink }, { "GetInventoryItemID", GetInventoryItemID },
+        { "C_QuestLog.GetQuestObjectives", api(C_QuestLog, "GetQuestObjectives") },
         { "C_Timer.After", C_Timer and C_Timer.After },
     }
     for _, entry in ipairs(checks) do lines[#lines+1] = entry[1] .. ": " .. (type(entry[2]) == "function" and "yes" or "missing") end

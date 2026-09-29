@@ -128,6 +128,13 @@ events:SetScript("OnEvent",function(_,event,arg1)
     end
     NS.QueueRefresh()
 end)
+function NS.ResetPositions()
+    NS.settings.position, NS.settings.compactPosition, NS.settings.arrowPosition = nil, nil, nil
+    NS.UI.Create(); NS.UI.frame:ClearAllPoints(); NS.UI.frame:SetPoint("CENTER")
+    if NS.UI.hud then NS.UI.Restore(NS.UI.hud, "compactPosition", "TOP", Minimap or UIParent, Minimap and "BOTTOM" or "TOP", 0, Minimap and -18 or -120) end
+    if NS.Nav.frame then NS.UI.Restore(NS.Nav.frame, "arrowPosition", "TOP", UIParent, "TOP", 0, -200) end
+    NS.Refresh()
+end
 SLASH_FOREVERPATH1, SLASH_FOREVERPATH2 = "/fp", "/foreverpath"
 SlashCmdList.FOREVERPATH = function(input)
     if not initialized then return end
@@ -135,6 +142,7 @@ SlashCmdList.FOREVERPATH = function(input)
     local command, argument = string.lower(input or ""):match("^%s*(%S*)%s*(.-)%s*$")
     if command == "diag" then NS.UI.Diagnostics()
     elseif command == "setup" then NS.UI.Setup()
+    elseif command == "settings" then NS.UI.Settings()
     elseif command == "opacity" then
         local percent = tonumber(argument)
         if percent and percent >= 30 and percent <= 100 then NS.UI.SetOpacity(percent / 100); message("Opacity: " .. percent .. "%")
@@ -145,14 +153,11 @@ SlashCmdList.FOREVERPATH = function(input)
         NS.Refresh()
     elseif command == "compact" then NS.UI.ToggleCompact()
     elseif command == "reset" then
-        NS.settings.position, NS.settings.compactPosition, NS.settings.arrowPosition = nil, nil, nil
-        NS.UI.Create(); NS.UI.frame:ClearAllPoints(); NS.UI.frame:SetPoint("CENTER")
-        if NS.UI.hud then NS.UI.Restore(NS.UI.hud, "compactPosition", "TOP", Minimap or UIParent, Minimap and "BOTTOM" or "TOP", 0, Minimap and -18 or -120) end
-        if NS.Nav.frame then NS.UI.Restore(NS.Nav.frame, "arrowPosition", "TOP", UIParent, "TOP", 0, -200) end
+        NS.ResetPositions()
     elseif command == "style" then
         if NS.SetStyle(argument) then message("Playstyle: " .. NS.Route.labels[argument]) else message("Playstyle must be speed, balanced, gear or story.") end
     elseif command == "spec" then
         if NS.SetSpec(argument) then message("Spec: " .. argument) else message("Spec must not be empty.") end
-    elseif command == "help" then message("/fp | setup | diag | compact | arrow | opacity <30-100> | reset | style <speed|balanced|gear|story> | spec <name>. Scores omit effects and set bonuses; ambiguous one-hand weapons need manual comparison.")
+    elseif command == "help" then message("/fp | setup | settings | diag | compact | arrow | opacity <30-100> | reset | style <speed|balanced|gear|story> | spec <name>. Scores omit effects and set bonuses; ambiguous one-hand weapons need manual comparison.")
     else NS.UI.Toggle() end
 end

@@ -159,7 +159,9 @@ function R.Plan(quests, routes, player, profile, style, limit)
         local position = step.map and { map = step.map, x = step.x, y = step.y } or (step.a == "accept" and positions[step.q]) or nil
         local row = { id = "route:" .. step.a .. ":" .. step.q, questID = step.q, action = step.a,
             title = VERB[step.a] .. ": " .. titleOf(routes, quests, step.q), verdict = i == 1 and "Do next" or "Then",
-            reasons = {}, slotIndexes = {} }
+            reasons = {}, slotIndexes = {},
+            stepIndex = entry.index, stepTotal = entry.total, guideName = entry.guide.name }
+        if fact and fact.bestReward then row.bestReward = fact.bestReward end
         if position and position.map then row.target = { map = position.map, x = position.x, y = position.y } end
         local where = step.npc and ("Talk to " .. step.npc) or (step.a == "complete" and "Do the objectives" or nil)
         if row.target then
