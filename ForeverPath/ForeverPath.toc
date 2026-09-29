@@ -2,11 +2,12 @@
 ## Title: ForeverPath
 ## Notes: Experimental quest and crafting advisor. Use /fp to open.
 ## Author: Harald
-## Version: 0.2.2-alpha
+## Version: 0.3.0
 ## SavedVariables: ForeverPathDB
 Engine.lua
-Data/Durotar.lua
+Data/Quests.lua
 Data/StatWeights.lua
+Data/RouteSignals.lua
 Demo.lua
 Client.lua
 UI.lua

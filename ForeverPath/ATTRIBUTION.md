@@ -1,11 +1,11 @@
 # Attribution
 
-## AllTheThings Durotar quest data
+## AllTheThings Forever quest data
 
-`Data/Durotar.lua` is generated from
+`Data/Quests.lua` is generated from
 [ATTWoWAddon/AllTheThings](https://github.com/ATTWoWAddon/AllTheThings), pinned to
-commit `8b27e4913f01edc1a813318fa738910b70278564`, from
-`.contrib/.db/forever/zones/kalimdor/durotar.lua`.
+commit `ff2c55edc1bfac8a6fe739b48cee1dac245d4729`, from
+every zone file under `.contrib/.db/forever/zones/` (and `constants/maps.lua` for map IDs).
 
 Copyright (c) 2026 AllTheThings WoW Addon
 
@@ -41,3 +41,15 @@ The imported data is licensed under
 ForeverPath preserves source, commit, retrieval date, client applicability and
 license on every generated profile. The importer includes stat facts only; it
 does not copy RXP guide text.
+
+## RestedXP Guides Forever route signals
+
+`Data/RouteSignals.lua` is generated from
+[RestedXP/RXPGuides](https://github.com/RestedXP/RXPGuides),
+`Guides/forever/*.lua`, pinned to commit
+`5dd3a25f0248db88a1d60134d6a622eee7328674` and retrieved 2026-09-29.
+
+The imported data is licensed under
+[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/).
+It holds facts only: which quest IDs the speedrun guides accept, in what order
+and for which classes. No guide text, route or step instructions are copied.

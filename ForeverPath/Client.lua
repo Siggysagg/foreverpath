@@ -119,21 +119,21 @@ function C.Snapshot()
     if #state.rows == 0 then state.message = "No item rewards exposed by this quest dialogue." end
     return state
 end
--- Zones with an imported quest database (addon/ForeverPath/Data/*.lua).
-local QUEST_DATA = { "Durotar" }
 
 -- Live "what should I do now": imported quests filtered and ranked for this character.
 function C.NextQuests(state, profile)
     state.mode = "next"
     local data = {}
-    for _, name in ipairs(QUEST_DATA) do
-        for id, node in pairs(NS[name] or {}) do data[id] = node end
+    for _, zone in pairs(NS.Quests or {}) do
+        for id, node in pairs(zone) do data[id] = node end
     end
     local isDone = api(C_QuestLog, "IsQuestFlaggedCompleted")
     local logIndex = api(C_QuestLog, "GetLogIndexForQuestID", "GetQuestLogIndexByID")
     local titleFor = api(C_QuestLog, "GetTitleForQuestID")
     local instant = api(C_Item, "GetItemInfoInstant")
-    local player = { level = state.level, class = state.class, faction = call(UnitFactionGroup, "player"),
+    local _, race = call(UnitRace, "player")
+    local player = { level = state.level, class = state.class, faction = call(UnitFactionGroup, "player"), race = race,
+        mapID = C_Map and call(C_Map.GetBestMapForUnit, "player") or nil,
         completed = {}, inLog = {}, equipped = {}, itemSlots = {} }
     for _, node in pairs(data) do
         local questID = node.questID
@@ -165,7 +165,7 @@ function C.NextQuests(state, profile)
             end
         end
     end
-    local rows = profile and NS.Engine.NextQuests(data, player, profile, NS.settings.goal) or {}
+    local rows = profile and NS.Engine.NextQuests(data, player, profile, NS.settings.goal, NS.RouteSignals) or {}
     for _, row in ipairs(rows) do
         local title = call(titleFor, row.questID)
         if type(title) == "string" and title ~= "" then row.title = title end
@@ -173,7 +173,7 @@ function C.NextQuests(state, profile)
     end
     state.rows = rows
     if #rows == 0 then
-        state.message = next(data) and "No quests from the ForeverPath database fit your character right now. Coverage so far: Horde, Durotar levels 1-12. Open a quest dialogue to compare its rewards."
+        state.message = next(data) and "No quests from the ForeverPath database fit your character right now (quest data: AllTheThings, Forever starting zones and levels 1-40). Open a quest dialogue to compare its rewards."
             or "No quest database installed. Open a quest dialogue to compare its rewards."
     end
     return state
@@ -181,7 +181,7 @@ end
 
 function C.Diagnostics()
     local version, build, _, interface = call(GetBuildInfo)
-    local lines = { "ForeverPath 0.2.2-alpha", "Client: " .. tostring(version) .. " build " .. tostring(build),
+    local lines = { "ForeverPath 0.3.0", "Client: " .. tostring(version) .. " build " .. tostring(build),
         "Interface: " .. tostring(interface), "Mode: " .. (NS.demo and "synthetic demo" or "live"),
         "Profile: " .. tostring(NS.settings.profile or "none"), "Expected interface: 16001 (unverified in game)",
         "API availability:" }
@@ -197,7 +197,7 @@ function C.Diagnostics()
     for _, entry in ipairs(checks) do lines[#lines+1] = entry[1] .. ": " .. (type(entry[2]) == "function" and "yes" or "missing") end
     lines[#lines+1] = "Unavailable events: " .. table.concat(C.rejectedEvents, ", ")
     lines[#lines+1] = "Last adapter error: " .. tostring(C.errors.last or "none")
-    lines[#lines+1] = "Live quest/crafting route database: not installed in this prototype"
+    lines[#lines+1] = "Quest database: AllTheThings Forever zones (Data/Quests.lua)"
     lines[#lines+1] = "No player name, realm or account ID collected. Review error text before sharing."
     return table.concat(lines, "\n")
 end
