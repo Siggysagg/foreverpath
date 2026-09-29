@@ -1,10 +1,18 @@
 # ForeverPath
 
+<!-- foreverpath:download -->
+## ⬇️ Download — v0.2.2-alpha
+
+- **Direct download:** [ForeverPath.zip](https://github.com/Siggysagg/foreverpath/releases/latest/download/ForeverPath.zip) — unzip and copy the `ForeverPath` folder into `Interface/AddOns`.
+- **WowUp (auto-updates):** Get Addons → **Install from URL** → `https://github.com/Siggysagg/foreverpath`
+- **Browse the files:** the addon itself is in the [`ForeverPath/`](https://github.com/Siggysagg/foreverpath/tree/main/ForeverPath) folder of this repository.
+<!-- /foreverpath:download -->
+
 **A lightweight progression guide for WoW Forever.**
 
 ForeverPath helps you make clearer next-step choices while you play. It gives compact, readable tips for quests, gear and professions, and updates recommendations as your character changes.
 
-> **Status:** `v0.1.0-beta` — early testing release for WoW Forever.
+> **Status:** `v0.2.2-alpha` — early testing release for WoW Forever.
 
 ## What it does
 

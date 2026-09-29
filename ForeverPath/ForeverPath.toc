@@ -1,0 +1,13 @@
+## Interface: 16001
+## Title: ForeverPath
+## Notes: Experimental quest and crafting advisor. Use /fp to open.
+## Author: Harald
+## Version: 0.2.2-alpha
+## SavedVariables: ForeverPathDB
+Engine.lua
+Data/Durotar.lua
+Data/StatWeights.lua
+Demo.lua
+Client.lua
+UI.lua
+Main.lua
