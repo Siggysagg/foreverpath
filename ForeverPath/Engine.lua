@@ -12,18 +12,24 @@ local function normalized(value)
 end
 
 -- Imported profiles are optional data. Matching is exact on class, the selected spec
--- (any spec when none is chosen) and inclusive level interval.
+-- (any spec when none is chosen) and inclusive level interval. A class-wide profile
+-- (no spec) matches any chosen spec, but an exact spec match always wins.
 function E.SelectStatProfile(class, level, spec)
     local data = NS.StatWeights
     if type(data) ~= "table" or type(data.profiles) ~= "table" or type(level) ~= "number" then return nil end
+    local loose
     for _, profile in ipairs(data.profiles) do
-        if normalized(profile.class) == normalized(class) and (spec == nil or normalized(profile.spec) == normalized(spec))
+        if normalized(profile.class) == normalized(class)
             and type(profile.minLevel) == "number" and type(profile.maxLevel) == "number"
             and level >= profile.minLevel and level <= profile.maxLevel and type(profile.weights) == "table" then
-            return profile
+            if spec == nil or normalized(profile.spec) == normalized(spec) then
+                return profile
+            elseif profile.spec == nil and not loose then
+                loose = profile
+            end
         end
     end
-    return nil
+    return loose
 end
 
 -- Imported specs for this class and level, in data order (used by the Profile button).
@@ -245,4 +251,56 @@ function E.NextQuests(quests, player, profile, goalName, signals)
         end
     end
     return rows
+end
+
+-- Upgrade finder (UPGRADE_PLAN spor C): the best available quest reward per slot,
+-- as ranked upgrade rows. Pure: available rows come from NextQuests (gearGain and
+-- bestReward already computed there); player.itemSlots maps item IDs to slots.
+-- Percent uses the same slot logic as CompareReward: the weakest equipped slot for
+-- multi-slot rewards, the sum for two-handers that replace both slots.
+function E.BestUpgrades(available, player, profile, limit)
+    local out = {}
+    if type(available) ~= "table" or type(profile) ~= "table" or type(player) ~= "table" then return out end
+    local itemSlots, equipped = player.itemSlots or {}, player.equipped or {}
+    local best = {}
+    for _, row in ipairs(available) do
+        local reward = row.bestReward
+        if reward and row.gearGain and row.gearGain > 0 then
+            local slotInfo = itemSlots[reward.itemID]
+            if type(slotInfo) == "table" and type(slotInfo.slots) == "table" and #slotInfo.slots > 0 then
+                local slot = table.concat(slotInfo.slots, "/")
+                if not best[slot] or row.gearGain > best[slot].row.gearGain then
+                    best[slot] = { row = row, reward = reward, slotInfo = slotInfo }
+                end
+            end
+        end
+    end
+    for slot, entry in pairs(best) do
+        local row, reward, slotInfo = entry.row, entry.reward, entry.slotInfo
+        local currentScore = nil
+        for _, key in ipairs(slotInfo.slots) do
+            local score = E.StatScore(equipped[key], profile.weights) or 0
+            if slotInfo.replaces == "all" then currentScore = (currentScore or 0) + score
+            elseif currentScore == nil or score < currentScore then currentScore = score end
+        end
+        local percent = currentScore and currentScore > 0
+            and math.floor(row.gearGain / currentScore * 100 + 0.5) or nil
+        out[#out + 1] = {
+            id = "upgrade:" .. slot, slot = slot, questID = row.questID,
+            title = reward.title or ("Upgrade for " .. slot), verdict = "Upgrade reward",
+            delta = row.gearGain, percent = percent, iconItemID = reward.itemID,
+            reasons = {
+                string.format("%+.1f weighted points for %s", row.gearGain, slot),
+                percent and string.format("+%d%% vs equipped", percent) or "Nothing equipped there yet",
+                "From " .. (row.title or ("quest " .. tostring(row.questID))),
+            },
+        }
+    end
+    table.sort(out, function(a, b)
+        if a.delta == b.delta then return a.slot < b.slot end
+        return a.delta > b.delta
+    end)
+    limit = limit or 3
+    while #out > limit do table.remove(out) end
+    return out
 end

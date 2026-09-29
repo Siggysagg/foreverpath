@@ -10,6 +10,13 @@ function N.Bearing(px, py, tx, ty, facing)
     return math.atan2(dy, dx) - (facing or 0), math.sqrt(dx * dx + dy * dy)
 end
 
+-- Pure: one wording for a distance in yards everywhere (arrow text, hero panel).
+function N.FormatDistance(yards)
+    if not yards then return nil end
+    if yards < 10 then return "You are there" end
+    return string.format("%d yd", math.floor(yards + 0.5))
+end
+
 local function world(map, x, y)
     if not (C_Map and C_Map.GetWorldPosFromMapPos and CreateVector2D) then return nil end
     local ok, continent, pos = pcall(C_Map.GetWorldPosFromMapPos, map, CreateVector2D(x, y))
@@ -95,14 +102,28 @@ function N.Update()
     end
     local ok, facing = pcall(GetPlayerFacing)
     local angle, distance = N.Bearing(px, py, tx, ty, ok and facing or 0)
-    if distance < 10 then
+    local text = N.FormatDistance(distance)
+    if text == "You are there" then
         f.arrow:Hide()
-        f.text:SetText(title .. "\nYou are there")
-        return
+    else
+        f.arrow:Show()
+        f.arrow:SetRotation(angle)
     end
-    f.arrow:Show()
-    f.arrow:SetRotation(angle)
-    f.text:SetText(string.format("%s\n%d yd", title, math.floor(distance + 0.5)))
+    f.text:SetText(title .. "\n" .. text)
+end
+
+-- Yards to the current target as display text for non-arrow UI, or nil when there
+-- is no target or the map APIs or the target's continent are unknown. Reuses the
+-- exact world()/playerWorld()/N.Bearing math from N.Update; no second calculation.
+function N.DistanceText()
+    local target = N.target
+    if not target then return nil end
+    local continent, tx, ty = world(target.map, target.x / 100, target.y / 100)
+    local playerContinent, px, py = playerWorld()
+    if not tx or not px or continent ~= playerContinent then return nil end
+    local ok, facing = pcall(GetPlayerFacing)
+    local _, distance = N.Bearing(px, py, tx, ty, ok and facing or 0)
+    return N.FormatDistance(distance)
 end
 
 -- The arrow follows the top step; a card's "Show way" pins that step until it is done.

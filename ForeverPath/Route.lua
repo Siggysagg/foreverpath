@@ -36,11 +36,15 @@ function R.TagsMatch(expr, player)
 end
 
 -- Guides in play order: the start guide for this race, then #next links, then the next fitting guide.
-function R.Chain(routes, player)
+-- The dungeon playstyle follows RXP's dungeon guide group; every other style excludes it.
+function R.Chain(routes, player, style)
+    local wantDungeon = style == "dungeon"
     local byName, fits = {}, {}
     for _, guide in ipairs(routes and routes.guides or {}) do
         byName[guide.name] = guide
-        if R.TagsMatch(guide.only, player) then fits[#fits + 1] = guide end
+        if R.TagsMatch(guide.only, player) and (guide.group == "dungeon") == wantDungeon then
+            fits[#fits + 1] = guide
+        end
     end
     local function preferred(guide) return not guide.defaultfor or R.TagsMatch(guide.defaultfor, player) end
     local start
@@ -120,14 +124,14 @@ local function levelReason(expected, level)
 end
 
 -- style: speed | balanced | gear | story. See Plan for what each shows.
-R.styles = { speed = "leveling", balanced = "balanced", gear = "gear", story = "balanced" }
-R.labels = { speed = "Speedrun", balanced = "Balanced", gear = "Gear", story = "Story" }
-R.order = { "speed", "balanced", "gear", "story" }
+R.styles = { speed = "leveling", balanced = "balanced", gear = "gear", story = "balanced", dungeon = "leveling" }
+R.labels = { speed = "Speedrun", balanced = "Balanced", gear = "Gear", story = "Story", dungeon = "Dungeon" }
+R.order = { "speed", "balanced", "gear", "story", "dungeon" }
 
 function R.Plan(quests, routes, player, profile, style, limit)
     style = R.styles[style] and style or "balanced"
     limit = limit or 5
-    local chain = R.Chain(routes, player)
+    local chain = R.Chain(routes, player, style)
     local level = player.level or 1
     local inRoute, signals, positions = {}, { quests = {} }, {}
     for _, node in pairs(quests) do
@@ -184,7 +188,7 @@ function R.Plan(quests, routes, player, profile, style, limit)
     local side = {}
     for _, fact in ipairs(available) do
         local keep = fact.here and not inRoute[fact.questID]
-        if style == "speed" then keep = keep and fact.gearGain > 0
+        if style == "speed" or style == "dungeon" then keep = keep and fact.gearGain > 0
         elseif style == "gear" then keep = keep and (fact.gearGain > 0 or fact.verdict ~= "Skip")
         elseif style == "balanced" then keep = keep and fact.verdict ~= "Skip" end
         if keep then
@@ -197,5 +201,8 @@ function R.Plan(quests, routes, player, profile, style, limit)
         end
     end
     for i = 1, math.min(#side, style == "story" and 10 or 5) do rows[#rows + 1] = side[i] end
+    -- Expose the full available-quest facts so callers can derive other views (the
+    -- upgrade finder) without re-walking the database or changing Plan's signature.
+    R.lastAvailable = available
     return rows
 end

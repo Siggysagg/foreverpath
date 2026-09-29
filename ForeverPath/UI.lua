@@ -65,6 +65,22 @@ local function fadeIn(f)
     f:Show()
     if UIFrameFadeIn then UIFrameFadeIn(f, 0.15, 0, 1) end
 end
+-- Micro-animation (UI-07): eases `apply(frame, value)` from `from` to `to` over
+-- `duration` seconds on the frame's own OnUpdate. No libraries, no AnimationGroup:
+-- with animations off, or without OnUpdate/GetTime, the end state applies instantly.
+local function animate(f, apply, from, to, duration)
+    if type(apply) ~= "function" or not f then return end
+    if NS.settings.animations == false or not (f.SetScript and GetTime) then
+        apply(f, to)
+        return
+    end
+    local start = GetTime()
+    f:SetScript("OnUpdate", function(self)
+        local progress = math.min(1, (GetTime() - start) / (duration or 0.2))
+        apply(self, from + (to - from) * progress)
+        if progress >= 1 then self:SetScript("OnUpdate", nil) end
+    end)
+end
 local function draggable(f, key)
     f:SetClampedToScreen(true); f:SetMovable(true); f:EnableMouse(true); f:RegisterForDrag("LeftButton")
     f:SetScript("OnDragStart", f.StartMoving)
@@ -123,8 +139,34 @@ function U.Create()
     U.progress.fill = U.progress:CreateTexture(nil,"ARTWORK")
     U.progress.fill:SetPoint("TOPLEFT"); U.progress.fill:SetHeight(6); U.progress.fill:SetTexture(unpack(accent))
     U.progress:Hide()
+    -- Hero (NAA-01): the one next step, big. Sits between the route progress and
+    -- the card list; U.Render fills it from the first "Do next" row (or rows[1]).
+    U.hero = panel(f, "ForeverPathHero", 664, 90, 0.8)
+    U.hero:SetPoint("TOPLEFT", 24, -198)
+    if U.hero.SetBackdropBorderColor then U.hero:SetBackdropBorderColor(accent[1], accent[2], accent[3], 0.9) end
+    U.hero.title = label(U.hero, "", 20, 16, -14, 524)
+    U.hero.reason = label(U.hero, "", 12, 16, -46, 524); U.hero.reason:SetTextColor(unpack(muted))
+    U.hero.way = button(U.hero, "Show way", 552, -12, 96, function() if U.hero.row then NS.Nav.Pin(U.hero.row) end end, 26)
+    U.hero.distance = label(U.hero, "", 12, 552, -46, 96); U.hero.distance:SetTextColor(unpack(accent))
+    local heroElapsed = 0
+    U.hero:SetScript("OnUpdate", function(_, delta)
+        heroElapsed = heroElapsed + (delta or 0)
+        if heroElapsed >= 0.25 then heroElapsed = 0; U.UpdateHeroDistance() end
+    end)
+    U.hero:Hide()
+    -- Upgrade finder section (spor C): best available quest reward per slot.
+    U.upgradeHeader = label(f,"UPGRADES AVAILABLE NOW",12,24,-304,664)
+    U.upgradeHeader:SetTextColor(unpack(U.theme.green))
+    U.upgradeSlots = {}
+    U.upgradeDetails = {}
+    for i = 1, 3 do
+        U.upgradeSlots[i] = label(f,"",12,24,-318 - (i - 1) * 16,90)
+        U.upgradeSlots[i]:SetTextColor(unpack(U.theme.green))
+        U.upgradeDetails[i] = label(f,"",12,118,-318 - (i - 1) * 16,570)
+    end
+    U.upgradeHeader:Hide()
     local scroll = CreateFrame("ScrollFrame",nil,f,"UIPanelScrollFrameTemplate")
-    scroll:SetPoint("TOPLEFT",24,-198); scroll:SetPoint("BOTTOMRIGHT",-40,40)
+    scroll:SetPoint("TOPLEFT",24,-296); scroll:SetPoint("BOTTOMRIGHT",-40,40)
     U.child = CreateFrame("Frame",nil,scroll); U.child:SetSize(664,1); scroll:SetScrollChild(U.child)
     U.scroll, U.cards = scroll, {}
     local meta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
@@ -157,6 +199,103 @@ local function card(index)
     return f
 end
 
+-- The hero explains the single next step: the first "Do next" row, falling back to
+-- rows[1] so the panel still shows the top suggestion when no row has that verdict.
+local function heroPick(rows, mode)
+    if mode == "rewards" then return nil end
+    for _, row in ipairs(rows) do
+        if row.verdict == "Do next" then return row end
+    end
+    return rows[1]
+end
+
+-- Yards to the hero step, but only while the arrow actually points at that step:
+-- when the followed or pinned step is a different row, a distance would describe
+-- the wrong target, so the hero shows none.
+local function heroDistance(row)
+    if not (row and row.target and NS.Nav and NS.Nav.DistanceText) then return nil end
+    local followed = NS.Nav.target
+    if not followed or row.target.map ~= followed.map
+        or math.abs((row.target.x or 0) - (followed.x or 0)) > 0.05
+        or math.abs((row.target.y or 0) - (followed.y or 0)) > 0.05 then return nil end
+    return NS.Nav.DistanceText()
+end
+
+function U.UpdateHeroDistance()
+    if U.hero then U.hero.distance:SetText(heroDistance(U.hero.row) or "") end
+end
+
+-- Pure: compact text that never comes back empty. Long text is truncated with an
+-- ellipsis so the card keeps its height; the distance chip joins the reason line.
+function U.CompactText(row, message)
+    local title, reason
+    if type(row) == "table" then
+        title = tostring(row.title or "Next step")
+        reason = tostring((row.reasons or {})[1] or row.verdict or "")
+    else
+        title = "ForeverPath"
+        reason = tostring(message or "")
+    end
+    if #reason == 0 then reason = "No suggestions for you here yet - open /fp" end
+    if #title > 34 then title = string.sub(title, 1, 33) .. "..." end
+    if #reason > 60 then reason = string.sub(reason, 1, 59) .. "..." end
+    local distance = type(row) == "table" and row.target and heroDistance(row)
+    if distance and #reason + #distance + 3 <= 63 then reason = reason .. " · " .. distance end
+    return title, reason
+end
+
+-- Everything inside pcall: a client-specific error must leave a visible card,
+-- never an empty one (BUG-01).
+local function renderCompact(rows, state)
+    local h = U.hud
+    if not h then return end
+    local first = rows[1]
+    local ok, title, reason = pcall(U.CompactText, first, state.message)
+    if not ok then
+        title, reason = "Compact error", "Send us /fp diag"
+        if NS.Client and NS.Client.errors then NS.Client.errors.last = "compact: " .. tostring(title) end
+    end
+    if h.title.lastText ~= title then
+        h.title:SetText(title); h.title.lastText = title
+        animate(h.title, function(target, value) target:SetAlpha(value) end, 0.35, 1, 0.15)
+    end
+    if h.reason.lastText ~= reason then
+        h.reason:SetText(reason); h.reason.lastText = reason
+        animate(h.reason, function(target, value) target:SetAlpha(value) end, 0.35, 1, 0.15)
+    end
+    local color = first and U.theme.verdict[first.verdict] or U.theme.accent
+    h.stripe:SetColorTexture(color[1], color[2], color[3])
+    local icon = first and (first.icon or first.texture)
+    if icon and icon ~= "" then h.icon:SetTexture(icon); h.icon:Show() else h.icon:Hide() end
+end
+
+-- The upgrade section sits between the hero and the card list; when it is shown the
+-- card list starts lower. Pure display selection: rows come from Engine.BestUpgrades.
+local function renderUpgrades(state)
+    local upgrades = (state.mode ~= "rewards" and type(state.upgrades) == "table") and state.upgrades or {}
+    if #upgrades == 0 then
+        U.upgradeHeader:Hide()
+        for i = 1, 3 do U.upgradeSlots[i]:Hide(); U.upgradeDetails[i]:Hide() end
+        U.scroll:ClearAllPoints(); U.scroll:SetPoint("TOPLEFT",24,-296)
+        return
+    end
+    U.upgradeHeader:Show()
+    for i = 1, 3 do
+        local row = upgrades[i]
+        if row then
+            local detail = row.percent and string.format("+%d%%  %s (+%.1f)", row.percent, row.title, row.delta)
+                or string.format("%s (+%.1f)", row.title, row.delta)
+            if #detail > 92 then detail = string.sub(detail, 1, 91) .. "..." end
+            if U.upgradeSlots[i].lastText ~= row.slot then U.upgradeSlots[i]:SetText(row.slot); U.upgradeSlots[i].lastText = row.slot end
+            if U.upgradeDetails[i].lastText ~= detail then U.upgradeDetails[i]:SetText(detail); U.upgradeDetails[i].lastText = detail end
+            U.upgradeSlots[i]:Show(); U.upgradeDetails[i]:Show()
+        else
+            U.upgradeSlots[i]:Hide(); U.upgradeDetails[i]:Hide()
+        end
+    end
+    U.scroll:ClearAllPoints(); U.scroll:SetPoint("TOPLEFT",24,-372)
+end
+
 function U.Render(state)
     U.Create()
     U.lastState = state
@@ -175,10 +314,32 @@ function U.Render(state)
     if stepRow then
         U.progress:Show()
         U.progressLabel:SetText(string.format("Route: %s — step %d of %d", stepRow.guideName or "?", stepRow.stepIndex or 0, stepRow.stepTotal))
-        U.progress.fill:SetWidth(664 * math.min(1, math.max(0, (stepRow.stepIndex or 1) / stepRow.stepTotal)))
+        local target = 664 * math.min(1, math.max(0, (stepRow.stepIndex or 1) / stepRow.stepTotal))
+        local key = stepRow.guideName .. ":" .. stepRow.stepIndex
+        if U.progress.lastKey ~= key then
+            animate(U.progress.fill, function(f, value) f:SetWidth(value) end, U.progress.lastWidth or 0, target, 0.4)
+            U.progress.lastKey, U.progress.lastWidth = key, target
+        end
     else
         U.progress:Hide()
         U.progressLabel:SetText("")
+    end
+    local hero = heroPick(rows, state.mode)
+    if hero then
+        if U.hero.lastRowId ~= hero.id then
+            animate(U.hero.title, function(target, value) target:SetAlpha(value) end, 0.25, 1, 0.18)
+            animate(U.hero.reason, function(target, value) target:SetAlpha(value) end, 0.25, 1, 0.18)
+            U.hero.lastRowId = hero.id
+        end
+        U.hero.row = hero
+        U.hero.title:SetText(hero.title or "")
+        U.hero.reason:SetText((hero.reasons or {})[1] or "")
+        if hero.target then U.hero.way:Show() else U.hero.way:Hide() end
+        U.hero:Show()
+        U.UpdateHeroDistance()
+    else
+        U.hero.row = nil
+        U.hero:Hide()
     end
     local y = 0
     for i = 1, math.max(1,#rows) do
@@ -191,6 +352,10 @@ function U.Render(state)
         c.body:SetText(row and table.concat(row.reasons or {},"\n") or state.message or "No suggestions yet.")
         c.link = row and row.link or nil
         c.row = row
+        if c.lastRowId ~= (row and row.id or nil) then
+            animate(c, function(target, value) target:SetAlpha(value) end, 0, 1, 0.15)
+            c.lastRowId = row and row.id or nil
+        end
         if row and row.target then c.way:Show() else c.way:Hide() end
         -- The item icon (when known) sits left of the text; without one the text keeps the full width.
         local icon = row and (row.icon or row.texture)
@@ -214,24 +379,10 @@ function U.Render(state)
     end
     for i = math.max(1,#rows)+1,#U.cards do U.cards[i]:Hide() end
     U.child:SetHeight(math.max(1, y))
+    renderUpgrades(state)
     local offset = U.scroll:GetVerticalScroll()
     U.scroll:SetVerticalScroll(math.min(offset,math.max(0,U.child:GetHeight()-U.scroll:GetHeight())))
-    if U.hud then
-        local first = rows[1]
-        local hudIcon = first and (first.icon or first.texture)
-        if hudIcon and hudIcon ~= "" then
-            U.hud.icon:SetTexture(hudIcon); U.hud.icon:Show()
-            U.hud.text:ClearAllPoints(); U.hud.text:SetPoint("TOPLEFT",40,-12); U.hud.text:SetWidth(198)
-        else
-            U.hud.icon:Hide()
-            U.hud.text:ClearAllPoints(); U.hud.text:SetPoint("TOPLEFT",14,-12); U.hud.text:SetWidth(236)
-        end
-        local text = first and (first.title .. "\n" .. ((first.reasons or {})[1] or first.verdict or "")) or state.message or "No suggestion"
-        if U.hud.lastText ~= text then
-            U.hud.text:SetText(text)
-            U.hud.lastText = text
-        end
-    end
+    renderCompact(rows, state)
 end
 
 function U.Toggle()
@@ -242,17 +393,29 @@ end
 -- The compact card stays open across sessions until it is closed with its X.
 function U.Compact(show)
     if show and not U.hud then
-        local h = panel(UIParent,"ForeverPathCompact",330,78,0.8)
+        local h = panel(UIParent,"ForeverPathCompact",330,52,0.8)
         U.hud = h
         draggable(h, "compactPosition")
         if Minimap then U.Restore(h, "compactPosition", "TOP", Minimap, "BOTTOM", 0, -18)
         else U.Restore(h, "compactPosition", "TOP", UIParent, "TOP", 0, -120) end
+        -- Verdict-colored status stripe: the card's state is readable before any text.
+        h.stripe = h:CreateTexture(nil,"ARTWORK")
+        h.stripe:SetSize(3,52); h.stripe:SetPoint("TOPLEFT",0,0)
+        h.stripe:SetColorTexture(unpack(accent))
         h.icon = h:CreateTexture(nil,"ARTWORK")
-        h.icon:SetSize(22,22); h.icon:SetPoint("TOPLEFT",10,-10)
+        h.icon:SetSize(26,26); h.icon:SetPoint("TOPLEFT",12,-8)
         h.icon:SetTexCoord(0.08,0.92,0.08,0.92); h.icon:Hide()
-        h.text = label(h,"",12,14,-12,236); h.text:SetHeight(56); h.text:SetJustifyV("TOP")
-        h.dismiss = button(h,"Hide",254,-8,44,function() local row = U.lastState and U.lastState.rows and U.lastState.rows[1]; if row then NS.DismissTip(row) end end, 22)
-        h.close = button(h,"X",302,-8,22,function() U.Compact(false) end, 22)
+        h.title = label(h,"ForeverPath",13,46,-7,200)
+        h.reason = label(h,"",11,46,-25,200); h.reason:SetTextColor(unpack(muted))
+        h.dismiss = button(h,"Hide",254,-6,44,function() local row = U.lastState and U.lastState.rows and U.lastState.rows[1]; if row then NS.DismissTip(row) end end, 20)
+        h.close = button(h,"X",302,-6,22,function() U.Compact(false) end, 20)
+        -- Clicking the card opens the main window; right-click dismisses the tip.
+        h:SetScript("OnMouseUp",function(_, mouseButton)
+            if mouseButton == "RightButton" then
+                local row = U.lastState and U.lastState.rows and U.lastState.rows[1]
+                if row then NS.DismissTip(row) end
+            else U.Toggle() end
+        end)
     end
     if not U.hud then return end
     NS.settings.compact = show and true or false
@@ -262,15 +425,33 @@ function U.ToggleCompact()
     U.Compact(not (U.hud and U.hud:IsShown()))
 end
 
+-- What the compact card last showed, for Diagnostics: makes "it showed nothing"
+-- diagnosable from a /fp diag paste instead of guesswork (BUG-01).
+function U.CompactDiagnostics()
+    local h = U.hud
+    if not h then return "Compact: not created" end
+    local shown = h.IsShown and h:IsShown() and "shown" or "hidden"
+    local state = U.lastState or {}
+    local rows = state.rows or {}
+    local first = rows[1]
+    local titleText = h.title and ((h.title.GetText and h.title:GetText()) or h.title.text) or "?"
+    return string.format("Compact: %s, mode %s, %d row(s), top '%s', title '%s' (%d chars), icon %s | STANDARD_TEXT_FONT: %s",
+        shown, tostring(state.mode or "?"), #rows, tostring(first and first.title or "-"),
+        tostring(titleText), #tostring(titleText),
+        h.icon and h.icon:IsShown() and "yes" or "no",
+        STANDARD_TEXT_FONT and "yes" or "MISSING")
+end
+
 local CHOICES = {
     { "speed", "Speedrun to 60", "Follow the RestedXP speedrun route. Side quests only when they give you a gear upgrade." },
     { "balanced", "Balanced", "The route, plus side quests with a good reward or a follow-up chain." },
     { "gear", "Gear first", "The route, plus every quest in your zone that improves your gear." },
     { "story", "The world as Blizzard made it", "The route as a guide, plus every quest and story in your zone. Nothing is marked Skip." },
+    { "dungeon", "Dungeon leveling", "Follow the RestedXP dungeon routes (runs dungeons while leveling). Side quests only for gear upgrades." },
 }
 function U.Setup()
     if not U.setup then
-        local f = panel(UIParent,"ForeverPathSetup",480,360)
+        local f = panel(UIParent,"ForeverPathSetup",480,430)
         U.setup = f
         f:SetFrameStrata("FULLSCREEN_DIALOG"); f:SetPoint("CENTER")
         draggable(f, "setupPosition")
@@ -342,6 +523,7 @@ function U.SyncSettings(f)
     f.autoSpec.title:SetTextColor(anySpec and unpack(U.theme.accent) or unpack(U.theme.muted))
     f.arrow.title:SetText("Arrow: " .. (NS.settings.arrow == false and "off" or "on"))
     f.compact.title:SetText("Tips card: " .. (NS.settings.compact == false and "off" or "on"))
+    f.animations.title:SetText("Animations: " .. (NS.settings.animations == false and "off" or "on"))
     f.opacityValue:SetText(tostring(math.floor((NS.settings.opacity or 0.85) * 100 + 0.5)) .. "%")
     f.throttleValue:SetText(tostring(NS.settings.tipThrottleSeconds or 10) .. "s")
 end
@@ -360,7 +542,7 @@ function U.Settings()
         label(f,"Playstyle",13,22,-76,240)
         f.styles = {}
         for i, style in ipairs(NS.Route.order) do
-            local b = button(f, STYLE_LABELS[style] or style, 22 + (i - 1) * 108, -98, 104, function()
+            local b = button(f, STYLE_LABELS[style] or style, 22 + (i - 1) * 92, -98, 88, function()
                 NS.SetStyle(style); U.SyncSettings(f)
             end)
             f.styles[style] = b
@@ -376,6 +558,10 @@ function U.Settings()
         end, 26)
         f.compact = button(f,"Tips card: on",134,-222,104,function()
             U.ToggleCompact(); U.SyncSettings(f)
+        end, 26)
+        f.animations = button(f,"Animations: on",22,-252,150,function()
+            NS.settings.animations = NS.settings.animations == false
+            U.SyncSettings(f)
         end, 26)
         label(f,"Opacity",12,258,-214,100)
         f.opacityMinus = button(f,"-",246,-222,22,function()
@@ -406,4 +592,63 @@ function U.Settings()
     end
     U.SyncSettings(U.settings)
     fadeIn(U.settings)
+end
+
+-- Minimap button: left-click the main window, right-click the tips card, drag around the ring.
+-- The angle is stored in settings; the default (east side) stays clear of the compact card
+-- that anchors directly below the minimap (the #17 lesson).
+U.DEFAULT_MINIMAP_ANGLE = 0
+local MINIMAP_RING = 80
+
+-- Pure: button-center offset from the minimap center for an angle in degrees (0 = east).
+function U.MinimapOffset(radius, angle)
+    local radians = math.rad(angle)
+    return math.cos(radians) * radius, math.sin(radians) * radius
+end
+
+function U.PlaceMinimap()
+    local b = U.minimap
+    if not b or not Minimap then return end
+    local x, y = U.MinimapOffset(MINIMAP_RING, tonumber(NS.settings.minimapAngle) or U.DEFAULT_MINIMAP_ANGLE)
+    b:ClearAllPoints()
+    b:SetPoint("CENTER", Minimap, "CENTER", x, y)
+end
+
+function U.Minimap()
+    if U.minimap or not Minimap then return U.minimap end
+    local b = CreateFrame("Button", "ForeverPathMinimap", Minimap, BackdropTemplateMixin and "BackdropTemplate" or nil)
+    U.minimap = b
+    b:SetSize(30, 30)
+    b:SetFrameStrata("MEDIUM")
+    b:SetMovable(true)
+    b:EnableMouse(true)
+    b:RegisterForDrag("LeftButton")
+    if b.SetBackdrop then
+        b:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
+        b:SetBackdropColor(0.02, 0.03, 0.05, 0.85)
+        b:SetBackdropBorderColor(border[1], border[2], border[3], 0.9)
+    end
+    b.icon = b:CreateTexture(nil, "ARTWORK")
+    b.icon:SetTexture("Interface\\Minimap\\MinimapArrow")
+    b.icon:SetSize(18, 18)
+    b.icon:SetPoint("CENTER")
+    b:SetScript("OnClick", function(_, mouseButton)
+        if mouseButton == "RightButton" then U.ToggleCompact() else U.Toggle() end
+    end)
+    -- Ring drag: while held, the button follows the cursor's angle around the minimap.
+    b:SetScript("OnDragStart", function()
+        b:SetScript("OnUpdate", function()
+            if not (GetCursorPosition and Minimap.GetCenter and Minimap.GetEffectiveScale) then return end
+            local okScale, scale = pcall(Minimap.GetEffectiveScale, Minimap)
+            local okCursor, px, py = pcall(GetCursorPosition)
+            local okCenter, cx, cy = pcall(Minimap.GetCenter, Minimap)
+            if not (okScale and okCursor and okCenter) or not (scale and px and py and cx) then return end
+            local angle = math.deg(math.atan2(py / scale - cy, px / scale - cx))
+            NS.settings.minimapAngle = angle
+            U.PlaceMinimap()
+        end)
+    end)
+    b:SetScript("OnDragStop", function() b:SetScript("OnUpdate", nil) end)
+    U.PlaceMinimap()
+    return b
 end

@@ -159,23 +159,138 @@ function C.Snapshot()
     return state
 end
 
+-- Event-driven quest-log cache (#101): completed/inLog/ready are built by ONE full scan per
+-- session and then updated from events only. Main.lua marks single quests dirty on
+-- QUEST_ACCEPTED/QUEST_TURNED_IN and the whole log on QUEST_LOG_UPDATE, so a plain refresh
+-- after the build makes no per-quest client calls at all.
+C.questState = { completed = {}, inLog = {}, ready = {} }
+-- API-call counters since load, shown in Diagnostics (PERF-01 acceptance).
+C.stats = { fullScans = 0, flagged = 0, logIndex = 0, logReads = 0 }
+
+function C.MarkQuestDirty(questID)
+    if type(questID) ~= "number" then return end
+    local state = C.questState
+    state.dirty = state.dirty or {}
+    state.dirty[questID] = true
+end
+
+function C.MarkLogDirty()
+    C.questState.dirtyLog = true
+end
+
+-- Quest IDs currently in the log, read from the log itself instead of probing every imported
+-- quest. Prefers C_QuestLog.GetQuestIDForLogIndex, falls back to the Classic global
+-- GetQuestLogTitle (title, level, tag, isHeader, collapsed, isComplete, frequency, questID).
+-- Returns nil when this client offers no way to enumerate the log.
+local function loggedQuestIDs()
+    local byIndex = api(C_QuestLog, "GetQuestIDForLogIndex")
+    local logTitle = api(C_QuestLog, "GetQuestLogTitle")
+    if type(byIndex) ~= "function" and type(logTitle) ~= "function" then return nil end
+    local _, count = call(C_QuestLog and C_QuestLog.GetNumQuestLogEntries or GetNumQuestLogEntries)
+    local ids = {}
+    for index = 1, tonumber(count) or 0 do
+        local questID = tonumber(call(byIndex, index))
+        if not questID and type(logTitle) == "function" then
+            local _, _, _, isHeader, _, _, _, fromTitle = call(logTitle, index)
+            if isHeader ~= true then questID = tonumber(fromTitle) end
+        end
+        if questID and questID ~= 0 then ids[#ids + 1] = questID end
+    end
+    return ids
+end
+
+-- One quest re-checked end to end: flagged state, log membership and readiness.
+local function recheckQuest(state, questID, isDone, logIndex, isReady)
+    C.stats.flagged = C.stats.flagged + 1
+    state.completed[questID] = call(isDone, questID) and true or nil
+    C.stats.logIndex = C.stats.logIndex + 1
+    local index = call(logIndex, questID)
+    if index and index ~= 0 then
+        state.inLog[questID] = true
+        state.ready[questID] = call(isReady, questID) and true or nil
+    else
+        state.inLog[questID], state.ready[questID] = nil, nil
+    end
+end
+
+-- Brings the cache up to date before rows are planned. known maps imported quest IDs to true;
+-- quests outside the database are ignored exactly like a full scan would ignore them.
+function C.SyncQuestState(known, isDone, logIndex, isReady)
+    local state = C.questState
+    if not state.built then  -- Session build: today's logic, run once.
+        C.stats.fullScans = C.stats.fullScans + 1
+        for questID in pairs(known) do
+            C.stats.flagged = C.stats.flagged + 1
+            if call(isDone, questID) then state.completed[questID] = true end
+            C.stats.logIndex = C.stats.logIndex + 1
+            local index = call(logIndex, questID)
+            if index and index ~= 0 then
+                state.inLog[questID] = true
+                if call(isReady, questID) then state.ready[questID] = true end
+            end
+        end
+        state.built, state.dirty, state.dirtyLog = true, nil, nil
+        return
+    end
+    for questID in pairs(state.dirty or {}) do  -- QUEST_ACCEPTED/QUEST_TURNED_IN payloads
+        if known[questID] then recheckQuest(state, questID, isDone, logIndex, isReady) end
+    end
+    state.dirty = nil
+    if not state.dirtyLog then return end
+    state.dirtyLog = nil  -- QUEST_LOG_UPDATE: rebuild inLog/ready from the log itself.
+    local ids, seen = loggedQuestIDs(), {}
+    C.stats.logReads = C.stats.logReads + 1
+    if ids then
+        for _, questID in ipairs(ids) do
+            if known[questID] then
+                seen[questID] = true
+                state.inLog[questID] = true
+                state.ready[questID] = call(isReady, questID) and true or nil
+            end
+        end
+    else
+        -- Client without log enumeration: probe imported quests like the build scan,
+        -- but leave IsQuestFlaggedCompleted out of it.
+        for questID in pairs(known) do
+            C.stats.logIndex = C.stats.logIndex + 1
+            local index = call(logIndex, questID)
+            if index and index ~= 0 then
+                seen[questID] = true
+                state.inLog[questID] = true
+                state.ready[questID] = call(isReady, questID) and true or nil
+            end
+        end
+    end
+    -- A quest that left the log since the last look may have been turned in without an
+    -- event; that is the only case where a log reread consults IsQuestFlaggedCompleted.
+    for questID in pairs(state.inLog) do
+        if not seen[questID] then
+            state.inLog[questID], state.ready[questID] = nil, nil
+            C.stats.flagged = C.stats.flagged + 1
+            if call(isDone, questID) then state.completed[questID] = true end
+        end
+    end
+end
+
 -- Live "what should I do now": imported quests filtered and ranked for this character.
 function C.NextQuests(state, profile)
     state.mode = "next"
-    local data = {}
+    local data, known = {}, {}
     for zoneName, zone in pairs(NS.Quests or {}) do
         for id, node in pairs(zone) do node.zone = node.zone or zoneName; data[id] = node end
     end
-    local isDone = api(C_QuestLog, "IsQuestFlaggedCompleted")
+    for _, node in pairs(data) do if node.questID then known[node.questID] = true end end
     local logIndex = api(C_QuestLog, "GetLogIndexForQuestID", "GetQuestLogIndexByID")
     local titleFor = api(C_QuestLog, "GetTitleForQuestID")
     local instant = api(C_Item, "GetItemInfoInstant")
     local isReady = api(C_QuestLog, "IsComplete", "IsQuestComplete")
     local mapInfo = C_Map and C_Map.GetMapInfo
     local _, race = call(UnitRace, "player")
+    C.SyncQuestState(known, api(C_QuestLog, "IsQuestFlaggedCompleted"), logIndex, isReady)
     local player = { level = state.level, class = state.class, faction = call(UnitFactionGroup, "player"), race = race,
         mapID = C_Map and call(C_Map.GetBestMapForUnit, "player") or nil, zone = state.zone,
-        completed = {}, inLog = {}, ready = {}, equipped = {}, itemSlots = {} }
+        completed = C.questState.completed, inLog = C.questState.inLog, ready = C.questState.ready,
+        equipped = {}, itemSlots = {} }
     player.zoneName = function(map)
         local info = call(mapInfo, map)
         return type(info) == "table" and info.name or nil
@@ -183,12 +298,6 @@ function C.NextQuests(state, profile)
     for _, node in pairs(data) do
         local questID = node.questID
         if questID then
-            if call(isDone, questID) then player.completed[questID] = true end
-            local index = call(logIndex, questID)
-            if index and index ~= 0 then
-                player.inLog[questID] = true
-                if call(isReady, questID) then player.ready[questID] = true end
-            end
             for _, reward in ipairs(node.rewards or {}) do
                 if reward.itemID and player.itemSlots[reward.itemID] == nil then
                     local _, _, _, equipLoc = call(instant, reward.itemID)
@@ -214,6 +323,7 @@ function C.NextQuests(state, profile)
         end
     end
     local rows = profile and NS.Route.Plan(data, NS.Routes, player, profile, NS.settings.style) or {}
+    state.upgrades = profile and NS.Engine.BestUpgrades(NS.Route.lastAvailable or {}, player, profile) or {}
     local verb = { accept = "Accept: ", turnin = "Turn in: ", complete = "Complete: " }
     for _, row in ipairs(rows) do
         local title = call(titleFor, row.questID)
@@ -257,6 +367,9 @@ function C.Diagnostics()
     lines[#lines+1] = "Unavailable events: " .. table.concat(C.rejectedEvents, ", ")
     lines[#lines+1] = "Last adapter error: " .. tostring(C.errors.last or "none")
     lines[#lines+1] = "Quest database: AllTheThings Forever zones (Data/Quests.lua)"
+    lines[#lines+1] = string.format("Quest state cache: %d full scan(s) this session, %d flagged + %d log-index calls, %d log read(s) since load",
+        C.stats.fullScans, C.stats.flagged, C.stats.logIndex, C.stats.logReads)
+    if NS.UI and NS.UI.CompactDiagnostics then lines[#lines+1] = NS.UI.CompactDiagnostics() end
     lines[#lines+1] = "No player name, realm or account ID collected. Review error text before sharing."
     return table.concat(lines, "\n")
 end

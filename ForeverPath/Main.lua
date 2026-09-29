@@ -111,6 +111,7 @@ events:SetScript("OnEvent",function(_,event,arg1)
             "QUEST_DETAIL","QUEST_PROGRESS","QUEST_COMPLETE","QUEST_FINISHED","QUEST_LOG_UPDATE","QUEST_ACCEPTED","QUEST_TURNED_IN",
             "GET_ITEM_INFO_RECEIVED","ITEM_DATA_LOAD_RESULT","PLAYER_REGEN_ENABLED","ZONE_CHANGED_NEW_AREA","QUEST_DATA_LOAD_RESULT"}) do register(name) end
         message("Loaded. /fp shows what to do next; open a quest dialogue to compare rewards.")
+        NS.UI.Minimap()
         NS.QueueRefresh()
         return
     end
@@ -121,8 +122,14 @@ events:SetScript("OnEvent",function(_,event,arg1)
     if event == "QUEST_DETAIL" or event == "QUEST_PROGRESS" or event == "QUEST_COMPLETE" then
         NS.dialogOpen = true; NS.Client.requested = {}
     elseif event == "QUEST_FINISHED" then NS.dialogOpen = false; NS.Client.requested = {}
-    elseif event == "PLAYER_LEVEL_UP" or event == "PLAYER_EQUIPMENT_CHANGED" or event == "QUEST_LOG_UPDATE" or event == "QUEST_ACCEPTED" or event == "QUEST_TURNED_IN" then
+    elseif event == "PLAYER_LEVEL_UP" or event == "PLAYER_EQUIPMENT_CHANGED" then
         invalidateDismissedTip(event, arg1)
+    elseif event == "QUEST_LOG_UPDATE" then
+        invalidateDismissedTip(event, arg1)
+        NS.Client.MarkLogDirty()  -- one log reread replaces the full per-quest scan (#101)
+    elseif event == "QUEST_ACCEPTED" or event == "QUEST_TURNED_IN" then
+        invalidateDismissedTip(event, arg1)
+        NS.Client.MarkQuestDirty(arg1)  -- arg1 is the quest ID; only it is rechecked (#101)
     elseif event == "GET_ITEM_INFO_RECEIVED" or event == "ITEM_DATA_LOAD_RESULT" then
         if not NS.Client.requested[arg1] then return end
     end
@@ -130,9 +137,11 @@ events:SetScript("OnEvent",function(_,event,arg1)
 end)
 function NS.ResetPositions()
     NS.settings.position, NS.settings.compactPosition, NS.settings.arrowPosition = nil, nil, nil
+    NS.settings.minimapAngle = nil
     NS.UI.Create(); NS.UI.frame:ClearAllPoints(); NS.UI.frame:SetPoint("CENTER")
     if NS.UI.hud then NS.UI.Restore(NS.UI.hud, "compactPosition", "TOP", Minimap or UIParent, Minimap and "BOTTOM" or "TOP", 0, Minimap and -18 or -120) end
     if NS.Nav.frame then NS.UI.Restore(NS.Nav.frame, "arrowPosition", "TOP", UIParent, "TOP", 0, -200) end
+    if NS.UI.minimap then NS.UI.PlaceMinimap() end
     NS.Refresh()
 end
 SLASH_FOREVERPATH1, SLASH_FOREVERPATH2 = "/fp", "/foreverpath"
@@ -155,9 +164,9 @@ SlashCmdList.FOREVERPATH = function(input)
     elseif command == "reset" then
         NS.ResetPositions()
     elseif command == "style" then
-        if NS.SetStyle(argument) then message("Playstyle: " .. NS.Route.labels[argument]) else message("Playstyle must be speed, balanced, gear or story.") end
+        if NS.SetStyle(argument) then message("Playstyle: " .. NS.Route.labels[argument]) else message("Playstyle must be speed, balanced, gear, story or dungeon.") end
     elseif command == "spec" then
         if NS.SetSpec(argument) then message("Spec: " .. argument) else message("Spec must not be empty.") end
-    elseif command == "help" then message("/fp | setup | settings | diag | compact | arrow | opacity <30-100> | reset | style <speed|balanced|gear|story> | spec <name>. Scores omit effects and set bonuses; ambiguous one-hand weapons need manual comparison.")
+    elseif command == "help" then message("/fp | setup | settings | diag | compact | arrow | opacity <30-100> | reset | style <speed|balanced|gear|story|dungeon> | spec <name>. Scores omit effects and set bonuses; ambiguous one-hand weapons need manual comparison.")
     else NS.UI.Toggle() end
 end
