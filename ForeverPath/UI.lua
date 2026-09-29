@@ -195,8 +195,61 @@ local function card(index)
         if self.SetBackdropBorderColor then self:SetBackdropBorderColor(border[1], border[2], border[3], 0.9) end
         if GameTooltip then GameTooltip:Hide() end
     end)
+    -- Clicking a card asks "says who?": the provenance popover (spor B).
+    f:SetScript("OnMouseUp",function(self) if self.row then U.Provenance(self.row, self) end end)
     U.cards[index] = f
     return f
+end
+
+-- Pure: one readable line per provenance record. No records means the row was read
+-- live from the game client, which is its own kind of source.
+local SOURCE_NAMES = { ATT = "AllTheThings", RXPGuides = "RestedXP Guides" }
+function U.ProvenanceLines(row)
+    local lines = {}
+    local records = type(row) == "table" and row.provenance
+    if type(records) == "table" then
+        for _, p in ipairs(records) do
+            if type(p) == "table" then
+                local parts = {}
+                local source = SOURCE_NAMES[p.source] or p.source
+                if source then parts[#parts + 1] = tostring(source) end
+                local commit = p.commit or p.attCommit
+                if commit then parts[#parts + 1] = "commit " .. tostring(commit):sub(1, 7) end
+                if p.build then parts[#parts + 1] = "build " .. tostring(p.build) end
+                if p.retrieved then parts[#parts + 1] = "retrieved " .. tostring(p.retrieved) end
+                if p.evidence and p.evidence ~= "verified" then
+                    parts[#parts] = parts[#parts] .. " (" .. tostring(p.evidence) .. ")"
+                end
+                if #parts > 0 then lines[#lines + 1] = table.concat(parts, " · ") end
+            end
+        end
+    end
+    if #lines == 0 then lines[#lines + 1] = "Read live from the game client" end
+    return lines
+end
+
+function U.Provenance(row, anchor)
+    if not U.prov then
+        local f = panel(UIParent, "ForeverPathProvenance", 340, 120, 0.9)
+        U.prov = f
+        f:SetFrameStrata("FULLSCREEN_DIALOG")
+        f:SetClampedToScreen(true)
+        table.insert(UISpecialFrames, "ForeverPathProvenance")  -- Esc closes
+        label(f, "SOURCE — why we trust this", 12, 14, -10, 300):SetTextColor(unpack(U.theme.green))
+        U.prov.lines = {}
+        for i = 1, 4 do U.prov.lines[i] = label(f, "", 12, 14, -28 - (i - 1) * 16, 310) end
+        local hint = label(f, "Click the popover to close", 10, 14, -98, 300)
+        hint:SetTextColor(unpack(muted))
+        f:EnableMouse(true)
+        f:SetScript("OnMouseUp", function(self) self:Hide() end)
+    end
+    local lines = U.ProvenanceLines(row)
+    for i = 1, 4 do
+        if lines[i] then U.prov.lines[i]:SetText(lines[i]); U.prov.lines[i]:Show() else U.prov.lines[i]:Hide() end
+    end
+    U.prov:ClearAllPoints()
+    U.prov:SetPoint("TOPLEFT", anchor or UIParent, "TOPRIGHT", 8, 0)
+    fadeIn(U.prov)
 end
 
 -- The hero explains the single next step: the first "Do next" row, falling back to
@@ -423,6 +476,58 @@ function U.Compact(show)
 end
 function U.ToggleCompact()
     U.Compact(not (U.hud and U.hud:IsShown()))
+end
+
+-- Custom route import (ROUTE-01): paste your own RestedXP-format route; it stays
+-- in this account's SavedVariables and wins over shipped guides.
+
+-- Pure: a working, commented example in the exact format the parser accepts.
+-- Doubling as living format documentation for the import window (ROUTE-02).
+function U.RouteExample()
+    return table.concat({
+        "RXPGuides.RegisterGuide([[",
+        "#group RestedXP Forever Dungeon Guide (H)   -- Dungeon group = dungeon playstyle",
+        "<< Horde",
+        "#name 10-20 My Launch Route",
+        "#defaultfor Troll/Orc",
+        "#next 20-30 The Next Leg",
+        "",
+        "step",
+        "    .goto 1411,43.3,68.5    -- map id, x, y as map percent",
+        "    >>Talk to Kaltunk",
+        "    .accept 4641 >>Accept Your Place In The World",
+        "    .target Kaltunk",
+        "step",
+        "    .xp 12",
+        "    .turnin 4641 >>Turn in Your Place In The World",
+        "]])",
+        "\n",
+    }, "\n")
+end
+
+function U.RouteImport()
+    if not U.routeWin then
+        local f = panel(UIParent, "ForeverPathRouteImport", 660, 440)
+        U.routeWin = f
+        f:SetPoint("CENTER"); f:SetFrameStrata("FULLSCREEN_DIALOG"); f:SetClampedToScreen(true)
+        table.insert(UISpecialFrames, "ForeverPathRouteImport")
+        label(f, "IMPORT YOUR ROUTE - RestedXP guide format", 16, 18, -20, 600)
+        local hint = label(f, "Paste RegisterGuide blocks with .accept/.turnin/.complete steps. Map-percent .goto works (1411,43.3,68.5). Stays on this computer.", 11, 18, -44, 620)
+        hint:SetTextColor(unpack(muted))
+        button(f, "X", 610, -14, 30, function() f:Hide() end)
+        local scroll = CreateFrame("ScrollFrame", nil, f, "UIPanelScrollFrameTemplate")
+        scroll:SetPoint("TOPLEFT", 18, -64); scroll:SetPoint("BOTTOMRIGHT", -36, -80)
+        local edit = CreateFrame("EditBox", nil, scroll); f.edit = edit
+        edit:SetMultiLine(true); edit:SetAutoFocus(false); edit:SetFontObject(ChatFontNormal); edit:SetWidth(590); edit:SetHeight(280)
+        edit:SetScript("OnEscapePressed", function() f:Hide() end)
+        scroll:SetScrollChild(edit)
+        f.status = label(f, "", 12, 18, -384, 620); f.status:SetTextColor(unpack(U.theme.green))
+        f.exampleBtn = button(f, "Insert example", 18, -404, 150, function() f.edit:SetText(U.RouteExample()) end)
+        f.importBtn = button(f, "Import", 176, -404, 120, function() NS.ImportRoute(f.edit:GetText()) end)
+        f.removeBtn = button(f, "Remove", 304, -404, 120, function() NS.ImportRoute(nil); f.edit:SetText("") end)
+    end
+    U.routeWin.edit:SetText(NS.settings.customRouteText or "")
+    fadeIn(U.routeWin)
 end
 
 -- What the compact card last showed, for Diagnostics: makes "it showed nothing"

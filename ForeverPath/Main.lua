@@ -111,6 +111,7 @@ events:SetScript("OnEvent",function(_,event,arg1)
             "QUEST_DETAIL","QUEST_PROGRESS","QUEST_COMPLETE","QUEST_FINISHED","QUEST_LOG_UPDATE","QUEST_ACCEPTED","QUEST_TURNED_IN",
             "GET_ITEM_INFO_RECEIVED","ITEM_DATA_LOAD_RESULT","PLAYER_REGEN_ENABLED","ZONE_CHANGED_NEW_AREA","QUEST_DATA_LOAD_RESULT"}) do register(name) end
         message("Loaded. /fp shows what to do next; open a quest dialogue to compare rewards.")
+        NS.Route.SetCustomRoute(NS.settings.customRouteText)
         NS.UI.Minimap()
         NS.QueueRefresh()
         return
@@ -135,6 +136,16 @@ events:SetScript("OnEvent",function(_,event,arg1)
     end
     NS.QueueRefresh()
 end)
+function NS.ImportRoute(text)
+    text = type(text) == "string" and #text > 0 and text or nil
+    NS.settings.customRouteText = text
+    NS.Route.SetCustomRoute(text)
+    local guides, steps = NS.Route.CustomRouteStats()
+    local status = text and (guides .. " guide(s), " .. steps .. " step(s) imported - your route wins") or "Custom route removed"
+    if NS.UI.routeWin then NS.UI.routeWin.status:SetText(status) end
+    message(status)
+    NS.Refresh()
+end
 function NS.ResetPositions()
     NS.settings.position, NS.settings.compactPosition, NS.settings.arrowPosition = nil, nil, nil
     NS.settings.minimapAngle = nil
@@ -152,6 +163,7 @@ SlashCmdList.FOREVERPATH = function(input)
     if command == "diag" then NS.UI.Diagnostics()
     elseif command == "setup" then NS.UI.Setup()
     elseif command == "settings" then NS.UI.Settings()
+    elseif command == "route" then NS.UI.RouteImport()
     elseif command == "opacity" then
         local percent = tonumber(argument)
         if percent and percent >= 30 and percent <= 100 then NS.UI.SetOpacity(percent / 100); message("Opacity: " .. percent .. "%")
@@ -167,6 +179,6 @@ SlashCmdList.FOREVERPATH = function(input)
         if NS.SetStyle(argument) then message("Playstyle: " .. NS.Route.labels[argument]) else message("Playstyle must be speed, balanced, gear, story or dungeon.") end
     elseif command == "spec" then
         if NS.SetSpec(argument) then message("Spec: " .. argument) else message("Spec must not be empty.") end
-    elseif command == "help" then message("/fp | setup | settings | diag | compact | arrow | opacity <30-100> | reset | style <speed|balanced|gear|story|dungeon> | spec <name>. Scores omit effects and set bonuses; ambiguous one-hand weapons need manual comparison.")
+    elseif command == "help" then message("/fp | setup | settings | route | diag | compact | arrow | opacity <30-100> | reset | style <speed|balanced|gear|story|dungeon> | spec <name>. Scores omit effects and set bonuses; ambiguous one-hand weapons need manual comparison.")
     else NS.UI.Toggle() end
 end

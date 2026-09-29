@@ -275,11 +275,11 @@ end
 -- Live "what should I do now": imported quests filtered and ranked for this character.
 function C.NextQuests(state, profile)
     state.mode = "next"
-    local data, known = {}, {}
+    local data, known, byQuestID = {}, {}, {}
     for zoneName, zone in pairs(NS.Quests or {}) do
         for id, node in pairs(zone) do node.zone = node.zone or zoneName; data[id] = node end
     end
-    for _, node in pairs(data) do if node.questID then known[node.questID] = true end end
+    for _, node in pairs(data) do if node.questID then known[node.questID] = true; byQuestID[node.questID] = node end end
     local logIndex = api(C_QuestLog, "GetLogIndexForQuestID", "GetQuestLogIndexByID")
     local titleFor = api(C_QuestLog, "GetTitleForQuestID")
     local instant = api(C_Item, "GetItemInfoInstant")
@@ -322,7 +322,7 @@ function C.NextQuests(state, profile)
             end
         end
     end
-    local rows = profile and NS.Route.Plan(data, NS.Routes, player, profile, NS.settings.style) or {}
+    local rows = profile and NS.Route.Plan(data, NS.Route.ActiveRoutes(), player, profile, NS.settings.style) or {}
     state.upgrades = profile and NS.Engine.BestUpgrades(NS.Route.lastAvailable or {}, player, profile) or {}
     local verb = { accept = "Accept: ", turnin = "Turn in: ", complete = "Complete: " }
     for _, row in ipairs(rows) do
@@ -336,6 +336,18 @@ function C.NextQuests(state, profile)
         end
         row.iconItemID = row.bestReward and row.bestReward.itemID or nil
         row.icon = row.iconItemID and C.ItemTexture(row.iconItemID) or row.texture or nil
+        -- Provenance (spor B): what backs this row — the quest record, the route, or the live client.
+        row.provenance = {}
+        local node = byQuestID[row.questID]
+        if node and type(node.provenance) == "table" then row.provenance[#row.provenance + 1] = node.provenance end
+        if row.action then
+            if NS.Route.customActive then
+                row.provenance[#row.provenance + 1] = { source = "Custom route", retrieved = "your import" }
+            elseif type(NS.Routes) == "table" and type(NS.Routes.provenance) == "table" then
+                row.provenance[#row.provenance + 1] = NS.Routes.provenance
+            end
+        end
+        if #row.provenance == 0 then row.provenance = nil end
         row.slotIndexes = {}
     end
     state.rows = rows

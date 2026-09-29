@@ -2,7 +2,7 @@
 ## Title: ForeverPath
 ## Notes: What to do next while leveling: quests, route and gear. Use /fp to open.
 ## Author: Harald
-## Version: 0.6.0
+## Version: 0.6.1
 ## SavedVariables: ForeverPathDB
 Engine.lua
 Route.lua

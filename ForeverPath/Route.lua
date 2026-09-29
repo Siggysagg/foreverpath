@@ -206,3 +206,129 @@ function R.Plan(quests, routes, player, profile, style, limit)
     R.lastAvailable = available
     return rows
 end
+
+-- Custom routes (ROUTE-01): the player's own RestedXP-format text, parsed at runtime.
+-- Pure Lua 5.1, the same subset the offline importer handles, minus world coordinates
+-- (.goto with /instance needs the build-time DB2 table). Map-percent .goto works.
+local function customTag(line)
+    local tail = string.match(line, "<<(.*)")
+    if not tail then return "" end
+    tail = string.match(tail, "^(.-)%-%-") or tail
+    tail = string.gsub(tail, "^%s+", "")
+    tail = string.gsub(tail, "%s+$", "")
+    tail = string.gsub(tail, "%s+", " ")
+    return string.upper(tail)
+end
+
+local function customBoth(first, second)
+    if first ~= "" and second ~= "" then return first .. " " .. second end
+    return first ~= "" and first or second
+end
+
+function R.ParseCustomGuides(text)
+    local guides, titles = {}, {}
+    if type(text) ~= "string" then return guides, titles end
+    for block in string.gmatch(text, "RegisterGuide%(%s*%[%[(.-)%]%]") do
+        local guide = { name = nil, minLevel = 1, maxLevel = 60, steps = {} }
+        local level, stepTag, step, sawStep = nil, "", nil, false
+        local function flush()
+            if not step then return end
+            for _, entry in ipairs(step.quests) do
+                local out = { a = entry[1], q = entry[2], level = level or guide.minLevel }
+                local tags = customBoth(stepTag, entry[3])
+                if tags ~= "" then out.only = tags end
+                if step.map then out.map, out.x, out.y = step.map, step.x, step.y end
+                if step.npc then out.npc = step.npc end
+                guide.steps[#guide.steps + 1] = out
+            end
+        end
+        for line in string.gmatch(block, "[^\r\n]+") do
+            line = string.gsub(line, "^%s+", "")
+            line = string.gsub(line, "%s+$", "")
+            if string.sub(line, 1, 4) == "step" then
+                flush()
+                stepTag, step = customTag(line), { quests = {} }
+                sawStep = true
+            elseif not sawStep and string.sub(line, 1, 2) == "<<" and guide.only == nil then
+                guide.only = customTag(line)
+            elseif string.sub(line, 1, 6) == "#name " then
+                guide.name = string.sub(line, 7)
+                local a, b = string.match(guide.name, "^(%d+)%-(%d+)")
+                if a then guide.minLevel, guide.maxLevel = tonumber(a), tonumber(b) end
+            elseif string.sub(line, 1, 12) == "#defaultfor " then
+                guide.defaultfor = string.upper(string.match(string.sub(line, 13), "^[^<<]*"))
+            elseif string.sub(line, 1, 7) == "#group " and string.find(line, "Dungeon") then
+                guide.group = "dungeon"
+            elseif string.sub(line, 1, 6) == "#next " then
+                for name in string.gmatch(string.match(string.sub(line, 7), "^[^<<]*") or "", "[^;]+") do
+                    if string.find(name, "%S") then
+                        guide.next = guide.next or {}
+                        guide.next[#guide.next + 1] = { to = string.match(name, "([^\\]+)$") }
+                    end
+                end
+            elseif step and not string.find(" " .. (stepTag or "") .. " ", "%sSKIP%s") then
+                local action, questID = string.match(line, "^%.([%a]+)%s+(%d+)")
+                if action == "accept" or action == "turnin" or action == "complete" then
+                    local stepTitle = string.match(line, ">>(.-)%s*<<") or string.match(line, ">>?(.*)")
+                    local name = string.match(line, ">>%s*Accept%s+(.+)$") or string.match(line, ">>%s*Turn in%s+(.+)$")
+                    if name then
+                        name = string.match(name, "^(.-)%s*<<") or name
+                        titles[tonumber(questID)] = name
+                    end
+                    step.quests[#step.quests + 1] = { action, tonumber(questID), customTag(line) }
+                else
+                    local mapID, x, y = string.match(line, "^%.goto%s+(%d+),([%d%.%-]+),([%d%.%-]+)$")
+                    if mapID then
+                        step.map, step.x, step.y = tonumber(mapID), tonumber(x), tonumber(y)
+                    elseif string.sub(line, 1, 8) == ".target " and step.npc == nil then
+                        step.npc = string.match(string.gsub(string.sub(line, 9), "::%d+", ""), "^[^<<,]+")
+                    elseif string.sub(line, 1, 4) == ".xp " then
+                        local xpLevel = tonumber(string.match(line, "^%.xp%s+(%d+)"))
+                        if xpLevel and (not level or xpLevel > level) then level = xpLevel end
+                    end
+                end
+            end
+        end
+        flush()
+        if guide.name and string.match(guide.name, "^%d+%-%d+") then
+            guides[#guides + 1] = guide
+        end
+    end
+    return guides, titles
+end
+
+-- Store and activate the player's pasted route; custom guides win over imported
+-- guides with the same name, so "my launch route" always beats the shipped one.
+function R.SetCustomRoute(text)
+    R.customGuides, R.customTitles = R.ParseCustomGuides(text)
+    R.customActive = #R.customGuides > 0
+    return R.customGuides, R.customTitles
+end
+
+function R.CustomRouteStats()
+    local guides, steps = R.customGuides or {}, 0
+    for _, guide in ipairs(guides) do steps = steps + #guide.steps end
+    return #guides, steps
+end
+
+function R.ActiveRoutes()
+    local routes = NS.Routes
+    if not R.customActive then return routes end
+    local merged = { guides = {}, titles = {}, provenance = routes and routes.provenance, customRoute = true }
+    for _, guide in ipairs((routes and routes.guides) or {}) do merged.guides[#merged.guides + 1] = guide end
+    for id, title in pairs((routes and routes.titles) or {}) do merged.titles[id] = title end
+    local byName = {}
+    for _, guide in ipairs(merged.guides) do byName[guide.name] = guide end
+    for _, guide in ipairs(R.customGuides) do
+        if byName[guide.name] then
+            for index, existing in ipairs(merged.guides) do
+                if existing.name == guide.name then merged.guides[index] = guide break end
+            end
+        else
+            merged.guides[#merged.guides + 1] = guide
+        end
+        byName[guide.name] = guide
+    end
+    for id, title in pairs(R.customTitles or {}) do merged.titles[id] = title end
+    return merged
+end
