@@ -42,14 +42,17 @@ ForeverPath preserves source, commit, retrieval date, client applicability and
 license on every generated profile. The importer includes stat facts only; it
 does not copy RXP guide text.
 
-## RestedXP Guides Forever route signals
+## RestedXP Guides Forever leveling routes
 
-`Data/RouteSignals.lua` is generated from
+`Data/Routes.lua` is generated from
 [RestedXP/RXPGuides](https://github.com/RestedXP/RXPGuides),
 `Guides/forever/*.lua`, pinned to commit
 `5dd3a25f0248db88a1d60134d6a622eee7328674` and retrieved 2026-09-29.
 
 The imported data is licensed under
-[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/).
-It holds facts only: which quest IDs the speedrun guides accept, in what order
-and for which classes. No guide text, route or step instructions are copied.
+[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) and is
+adapted, not copied verbatim: ForeverPath keeps the route facts (which guide
+follows which, quest IDs and names, NPC names, positions, expected levels and
+class/race tags). World coordinates are converted to map positions with the
+client's UiMapAssignment table. Step instructions and tips are not included.
+Thanks to RestedXP for publishing the guides under an open license.

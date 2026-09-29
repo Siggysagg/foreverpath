@@ -56,6 +56,7 @@ function C.Snapshot()
     state.questID = NS.dialogOpen and call(GetQuestID) or nil
     local profile = NS.Engine.ProfileFor(state.class, state.level, NS.settings.spec, NS.settings.profile)
     state.profileLabel = profile and (profile.title or profile.label or profile.spec) or nil
+    C.profileLabel = state.profileLabel
     if not NS.dialogOpen then return C.NextQuests(state, profile) end
     if not GetQuestItemLink or not GetInventoryItemLink or not GetInventoryItemID then
         state.message = "Required item APIs unavailable. Open Diagnostics."; return state
@@ -124,23 +125,32 @@ end
 function C.NextQuests(state, profile)
     state.mode = "next"
     local data = {}
-    for _, zone in pairs(NS.Quests or {}) do
-        for id, node in pairs(zone) do data[id] = node end
+    for zoneName, zone in pairs(NS.Quests or {}) do
+        for id, node in pairs(zone) do node.zone = node.zone or zoneName; data[id] = node end
     end
     local isDone = api(C_QuestLog, "IsQuestFlaggedCompleted")
     local logIndex = api(C_QuestLog, "GetLogIndexForQuestID", "GetQuestLogIndexByID")
     local titleFor = api(C_QuestLog, "GetTitleForQuestID")
     local instant = api(C_Item, "GetItemInfoInstant")
+    local isReady = api(C_QuestLog, "IsComplete", "IsQuestComplete")
+    local mapInfo = C_Map and C_Map.GetMapInfo
     local _, race = call(UnitRace, "player")
     local player = { level = state.level, class = state.class, faction = call(UnitFactionGroup, "player"), race = race,
-        mapID = C_Map and call(C_Map.GetBestMapForUnit, "player") or nil,
-        completed = {}, inLog = {}, equipped = {}, itemSlots = {} }
+        mapID = C_Map and call(C_Map.GetBestMapForUnit, "player") or nil, zone = state.zone,
+        completed = {}, inLog = {}, ready = {}, equipped = {}, itemSlots = {} }
+    player.zoneName = function(map)
+        local info = call(mapInfo, map)
+        return type(info) == "table" and info.name or nil
+    end
     for _, node in pairs(data) do
         local questID = node.questID
         if questID then
             if call(isDone, questID) then player.completed[questID] = true end
             local index = call(logIndex, questID)
-            if index and index ~= 0 then player.inLog[questID] = true end
+            if index and index ~= 0 then
+                player.inLog[questID] = true
+                if call(isReady, questID) then player.ready[questID] = true end
+            end
             for _, reward in ipairs(node.rewards or {}) do
                 if reward.itemID and player.itemSlots[reward.itemID] == nil then
                     local _, _, _, equipLoc = call(instant, reward.itemID)
@@ -165,15 +175,17 @@ function C.NextQuests(state, profile)
             end
         end
     end
-    local rows = profile and NS.Engine.NextQuests(data, player, profile, NS.settings.goal, NS.RouteSignals) or {}
+    local rows = profile and NS.Route.Plan(data, NS.Routes, player, profile, NS.settings.style) or {}
+    local verb = { accept = "Accept: ", turnin = "Turn in: ", complete = "Complete: " }
     for _, row in ipairs(rows) do
         local title = call(titleFor, row.questID)
-        if type(title) == "string" and title ~= "" then row.title = title end
+        if type(title) == "string" and title ~= "" then row.title = (verb[row.action] or "") .. title
+        else call(api(C_QuestLog, "RequestLoadQuestByID"), row.questID) end  -- QUEST_DATA_LOAD_RESULT refreshes
         row.slotIndexes = {}
     end
     state.rows = rows
     if #rows == 0 then
-        state.message = next(data) and "No quests from the ForeverPath database fit your character right now (quest data: AllTheThings, Forever starting zones and levels 1-40). Open a quest dialogue to compare its rewards."
+        state.message = next(data) and "No route step or quest in this zone fits your character right now (route: RestedXP guides, quests: AllTheThings). Open a quest dialogue to compare its rewards."
             or "No quest database installed. Open a quest dialogue to compare its rewards."
     end
     return state
@@ -181,9 +193,10 @@ end
 
 function C.Diagnostics()
     local version, build, _, interface = call(GetBuildInfo)
-    local lines = { "ForeverPath 0.3.0", "Client: " .. tostring(version) .. " build " .. tostring(build),
-        "Interface: " .. tostring(interface), "Mode: " .. (NS.demo and "synthetic demo" or "live"),
-        "Profile: " .. tostring(NS.settings.profile or "none"), "Expected interface: 16001 (unverified in game)",
+    local meta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
+    local lines = { "ForeverPath " .. tostring(meta and meta("ForeverPath", "Version") or "?"), "Client: " .. tostring(version) .. " build " .. tostring(build),
+        "Interface: " .. tostring(interface),
+        "Profile: " .. tostring(C.profileLabel or NS.settings.spec or NS.settings.profile or "automatic"), "Expected interface: 16001 (unverified in game)",
         "API availability:" }
     local checks = {
         { "C_Item.GetItemInfo / GetItemInfo", api(C_Item, "GetItemInfo") },

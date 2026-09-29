@@ -26,6 +26,21 @@ function E.SelectStatProfile(class, level, spec)
     return nil
 end
 
+-- Imported specs for this class and level, in data order (used by the Profile button).
+function E.SpecsFor(class, level)
+    local specs, seen = {}, {}
+    local data = NS.StatWeights
+    if type(data) ~= "table" or type(data.profiles) ~= "table" or type(level) ~= "number" then return specs end
+    for _, profile in ipairs(data.profiles) do
+        if normalized(profile.class) == normalized(class) and profile.spec and not seen[normalized(profile.spec)]
+            and (profile.minLevel or 0) <= level and level <= (profile.maxLevel or math.huge) then
+            seen[normalized(profile.spec)] = true
+            specs[#specs + 1] = profile.spec
+        end
+    end
+    return specs
+end
+
 -- New players never pick a profile: fall back to a sensible one for their class.
 local CLASS_DEFAULT = { WARRIOR = "strength", PALADIN = "strength", SHAMAN = "strength", HUNTER = "agility",
     ROGUE = "agility", DRUID = "agility", MAGE = "intellect", PRIEST = "intellect", WARLOCK = "intellect" }
@@ -79,91 +94,6 @@ function E.CompareReward(reward, equipped, profileName)
     out.delta, out.comparedSlot, out.confidence = rewardScore - currentScore, comparedSlot, "high"
     out.verdict = out.delta > 0 and "Higher stat score" or "No stat gain"
     return out
-end
-
--- A target includes all unfinished AND prerequisites exactly once.
--- An unknown dependency is never treated as a zero-cost prerequisite.
-function E.Remaining(graph, target, completed)
-    local result, seen, active = {}, {}, {}
-    local function visit(id)
-        if completed[id] or seen[id] then return true end
-        if active[id] then return nil, "Dependency cycle: " .. id end
-        local node = graph[id]
-        if not node then return nil, "Missing dependency: " .. id end
-        active[id] = true
-        for _, parent in ipairs(node.requires or {}) do
-            local ok, err = visit(parent)
-            if not ok then return nil, err end
-        end
-        active[id], seen[id] = nil, true
-        result[#result + 1] = node
-        return true
-    end
-    local ok, err = visit(target)
-    if not ok then return nil, err end
-    return result
-end
-
-function E.Evaluate(graph, target, state)
-    local root = graph[target]
-    local out = { id = target, title = root and root.title or target, kind = root and root.kind or "quest", reasons = {}, verified = true }
-    local nodes, err = E.Remaining(graph, target, state.completed or {})
-    if not nodes then out.verdict = "Needs data"; out.reasons[1] = err; return out end
-    if #nodes == 0 then out.verdict = "Complete"; return out end
-    local profile = E.profiles[state.profile]
-    if not profile then out.verdict = "Choose profile"; return out end
-    local scores = {}
-    for slot, stats in pairs(state.equipped or {}) do scores[slot] = E.StatScore(stats, profile.weights) or 0 end
-    local minutes, xp, gold, gear, unlocks = 0, 0, 0, 0, 0
-    local uncertain, blocked = false, false
-    for _, node in ipairs(nodes) do
-        if node.faction and node.faction ~= state.faction then blocked = true; out.reasons[#out.reasons + 1] = "Faction requirement" end
-        if node.minLevel and node.minLevel > (state.level or 0) then blocked = true; out.reasons[#out.reasons + 1] = "Requires level " .. node.minLevel end
-        if node.profession and ((state.professions or {})[node.profession] or 0) < (node.skill or 0) then blocked = true; out.reasons[#out.reasons + 1] = "Profession skill required" end
-        if node.group and not state.grouped then blocked = true; out.reasons[#out.reasons + 1] = "Group required" end
-        if node.minutes == nil or node.costGold == nil or node.xp == nil or not node.dependenciesKnown or not node.rewardsKnown then uncertain = true end
-        if node.evidence ~= "verified" then out.verified = false end
-        minutes, xp, gold = minutes + (node.minutes or 0), xp + (node.xp or 0), gold + (node.costGold or 0)
-        unlocks = unlocks + (node.unlockValue or 0)
-        local function gain(item)
-            if not item.slot or not item.stats then uncertain = true; return 0 end
-            return math.max(0, E.StatScore(item.stats, profile.weights) - (scores[item.slot] or 0))
-        end
-        local function equip(item)
-            local delta = gain(item)
-            if delta > 0 then scores[item.slot] = E.StatScore(item.stats, profile.weights); gear = gear + delta end
-        end
-        -- Guaranteed rewards may stack; choices are mutually exclusive.
-        for _, item in ipairs(node.rewards or {}) do equip(item) end
-        local best, bestGain
-        for _, item in ipairs(node.choices or {}) do
-            local delta = gain(item)
-            if not bestGain or delta > bestGain then best, bestGain = item, delta end
-        end
-        if best then equip(best) end
-    end
-    if gold > (state.gold or 0) then blocked = true; out.reasons[#out.reasons + 1] = "Above available gold budget" end
-    out.minutes, out.xp, out.costGold, out.gearGain, out.steps = minutes, xp, gold, gear, #nodes
-    if blocked then out.verdict = "Not available"; return out end
-    if uncertain then out.verdict = "Needs data"; out.reasons[#out.reasons + 1] = "Incomplete rewards, costs or prerequisites"; return out end
-    local goal = E.goals[state.goal] or E.goals.balanced
-    out.score = (gear * goal.gear + xp / 100 * goal.xp + unlocks / 10 * goal.professions) / math.max(1, minutes)
-    out.verdict = "Consider"
-    if gear == 0 and xp == 0 and unlocks == 0 and root.downstreamKnown then out.verdict = "Low priority" end
-    out.reasons[#out.reasons + 1] = string.format("+%.1f stat points | %d XP | %d remaining steps", gear, xp, #nodes)
-    out.reasons[#out.reasons + 1] = string.format("Estimated %d min | %.1fg cost", minutes, gold)
-    if not root.downstreamKnown then out.reasons[#out.reasons + 1] = "Later unlocks unknown: no skip advice" end
-    return out
-end
-function E.Rank(graph, targets, state)
-    local rows = {}
-    for _, id in ipairs(targets) do rows[#rows + 1] = E.Evaluate(graph, id, state) end
-    table.sort(rows, function(a, b)
-        if a.score == b.score then return a.id < b.id end
-        return (a.score or -1) > (b.score or -1)
-    end)
-    if rows[1] and rows[1].score and rows[1].score > 0 then rows[1].verdict = "First suggestion" end
-    return rows
 end
 
 -- NextQuests: which imported quests can this character take right now, and which are worth it.
@@ -261,7 +191,8 @@ function E.NextQuests(quests, player, profile, goalName, signals)
                 end
             end
             local levelGap = level - (node.minLevel or level)
-            local here = player.mapID and node.position and node.position.map == player.mapID
+            local here = (player.mapID and node.position and node.position.map == player.mapID)
+                or (not node.position and node.zone and node.zone == player.zone)
             -- Deterministic: gear delta, follow-up chain length and level fit, weighted by the chosen goal.
             -- Chain value is capped: a 22-quest chain is good, not twice as good as an 11-quest one.
             row.score = row.gearGain * goal.gear + math.min(row.unlocks, 10) * 1.5 * goal.xp

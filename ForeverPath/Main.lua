@@ -1,22 +1,17 @@
 local addonName, NS = ...
-NS.demo, NS.dialogOpen, NS.tipRevision = false, false, 0
+NS.dialogOpen, NS.tipRevision = false, 0
 local pending, initialized, lastEventRefresh = false, false, nil
 local function message(text) print("|cff42dbbdForeverPath:|r " .. text) end
 function NS.Refresh()
     if not initialized then return end
     if InCombatLockdown and InCombatLockdown() then return end
     local state
-    if NS.demo then
-        local s = NS.Demo.state
-        s.profile, s.goal = NS.settings.profile or "strength", NS.settings.goal
-        state = { rows = NS.Engine.Rank(NS.Demo.graph,NS.Demo.targets,s) }
-    else
-        local ok, result = pcall(NS.Client.Snapshot)
-        if ok then state = result else
-            NS.Client.errors.last = tostring(result)
-            state = { rows = {}, message = "Client data unavailable. Copy Diagnostics for investigation." }
-        end
+    local ok, result = pcall(NS.Client.Snapshot)
+    if ok then state = result else
+        NS.Client.errors.last = tostring(result)
+        state = { rows = {}, message = "Client data unavailable. Copy Diagnostics for investigation." }
     end
+    state.updated = date and date("%H:%M:%S") or nil
     local dismissed = NS.settings.dismissedTip
     if type(dismissed) == "table" and state.rows then
         local visible = {}
@@ -26,6 +21,7 @@ function NS.Refresh()
         state.rows = visible
     end
     NS.UI.Render(state)
+    if state.mode ~= "rewards" then NS.Nav.Follow(state.rows) end
 end
 function NS.DismissTip(row)
     if type(row) == "string" then row = { id = row } end
@@ -60,14 +56,20 @@ function NS.QueueRefresh()
     end
     if C_Timer and C_Timer.After then C_Timer.After(delay, refresh) else refresh() end
 end
-function NS.SetDemo(value)
-    NS.demo = value
-    if value and not NS.settings.profile then NS.settings.profile = "strength" end
-    NS.Refresh()
-end
+-- Imported spec weights win over the generic profiles, so cycle specs when the class has them.
 function NS.CycleProfile()
-    local nextProfile = { strength = "agility", agility = "intellect", intellect = "strength" }
-    NS.settings.profile = nextProfile[NS.settings.profile] or "strength"
+    local _, class = UnitClass("player")
+    local specs = NS.Engine.SpecsFor(class, UnitLevel("player"))
+    if #specs > 0 then
+        local current = 1
+        for i, spec in ipairs(specs) do
+            if string.lower(spec) == string.lower(NS.settings.spec or "") then current = i end
+        end
+        NS.settings.spec = specs[current % #specs + 1]
+    else
+        local nextProfile = { strength = "agility", agility = "intellect", intellect = "strength" }
+        NS.settings.profile = nextProfile[NS.settings.profile] or "strength"
+    end
     NS.Refresh()
 end
 function NS.SetSpec(spec)
@@ -76,15 +78,18 @@ function NS.SetSpec(spec)
     NS.Refresh()
     return true
 end
-function NS.SetGoal(goal)
-    if not NS.Engine.goals[goal] then return false end
-    NS.settings.goal = goal
+function NS.SetStyle(style)
+    if not NS.Route.styles[style] then return false end
+    NS.settings.style = style
     NS.Refresh()
     return true
 end
-function NS.CycleGoal()
-    local nextGoal = { balanced = "leveling", leveling = "gear", gear = "professions", professions = "balanced" }
-    NS.SetGoal(nextGoal[NS.settings.goal] or "balanced")
+function NS.CycleStyle()
+    local order = NS.Route.order
+    for i, style in ipairs(order) do
+        if style == NS.settings.style then return NS.SetStyle(order[i % #order + 1]) end
+    end
+    NS.SetStyle("balanced")
 end
 local events = CreateFrame("Frame")
 local function register(event)
@@ -98,15 +103,20 @@ events:SetScript("OnEvent",function(_,event,arg1)
         ForeverPathDB = type(ForeverPathDB) == "table" and ForeverPathDB or {}
         NS.settings = ForeverPathDB
         if not NS.Engine.profiles[NS.settings.profile] then NS.settings.profile = nil end
-        if not NS.Engine.goals[NS.settings.goal] then NS.settings.goal = "balanced" end
+        if not NS.Route.styles[NS.settings.style] then NS.settings.style = "balanced" end
+        NS.settings.goal = nil
         if type(NS.settings.tipThrottleSeconds) ~= "number" or NS.settings.tipThrottleSeconds < 0 then NS.settings.tipThrottleSeconds = 10 end
         initialized = true
         for _, name in ipairs({"PLAYER_ENTERING_WORLD","PLAYER_LEVEL_UP","PLAYER_EQUIPMENT_CHANGED","BAG_UPDATE_DELAYED",
             "QUEST_DETAIL","QUEST_PROGRESS","QUEST_COMPLETE","QUEST_FINISHED","QUEST_LOG_UPDATE","QUEST_ACCEPTED","QUEST_TURNED_IN",
-            "GET_ITEM_INFO_RECEIVED","ITEM_DATA_LOAD_RESULT","PLAYER_REGEN_ENABLED","ZONE_CHANGED_NEW_AREA"}) do register(name) end
+            "GET_ITEM_INFO_RECEIVED","ITEM_DATA_LOAD_RESULT","PLAYER_REGEN_ENABLED","ZONE_CHANGED_NEW_AREA","QUEST_DATA_LOAD_RESULT"}) do register(name) end
         message("Loaded. /fp shows what to do next; open a quest dialogue to compare rewards.")
         NS.QueueRefresh()
         return
+    end
+    if event == "PLAYER_ENTERING_WORLD" then
+        if not NS.settings.setupDone then NS.UI.Setup() end
+        if NS.settings.compact ~= false then NS.UI.Compact(true) end
     end
     if event == "QUEST_DETAIL" or event == "QUEST_PROGRESS" or event == "QUEST_COMPLETE" then
         NS.dialogOpen = true; NS.Client.requested = {}
@@ -123,15 +133,26 @@ SlashCmdList.FOREVERPATH = function(input)
     if not initialized then return end
     NS.UI.Create()
     local command, argument = string.lower(input or ""):match("^%s*(%S*)%s*(.-)%s*$")
-    if command == "demo" then NS.SetDemo(true); NS.UI.frame:Show()
-    elseif command == "live" then NS.SetDemo(false); NS.UI.frame:Show()
-    elseif command == "diag" then NS.UI.Diagnostics()
+    if command == "diag" then NS.UI.Diagnostics()
+    elseif command == "setup" then NS.UI.Setup()
+    elseif command == "opacity" then
+        local percent = tonumber(argument)
+        if percent and percent >= 30 and percent <= 100 then NS.UI.SetOpacity(percent / 100); message("Opacity: " .. percent .. "%")
+        else message("Opacity must be 30-100 (percent).") end
+    elseif command == "arrow" then
+        NS.settings.arrow = NS.settings.arrow == false
+        message(NS.settings.arrow and "Arrow on: it follows your next step." or "Arrow off.")
+        NS.Refresh()
     elseif command == "compact" then NS.UI.ToggleCompact()
-    elseif command == "reset" then NS.settings.position = nil; NS.UI.Create(); NS.UI.frame:ClearAllPoints(); NS.UI.frame:SetPoint("CENTER")
-    elseif command == "goal" then
-        if NS.SetGoal(argument) then message("Goal: " .. argument) else message("Goal must be leveling, gear, professions or balanced.") end
+    elseif command == "reset" then
+        NS.settings.position, NS.settings.compactPosition, NS.settings.arrowPosition = nil, nil, nil
+        NS.UI.Create(); NS.UI.frame:ClearAllPoints(); NS.UI.frame:SetPoint("CENTER")
+        if NS.UI.hud then NS.UI.Restore(NS.UI.hud, "compactPosition", "TOP", Minimap or UIParent, Minimap and "BOTTOM" or "TOP", 0, Minimap and -18 or -120) end
+        if NS.Nav.frame then NS.UI.Restore(NS.Nav.frame, "arrowPosition", "TOP", UIParent, "TOP", 0, -200) end
+    elseif command == "style" then
+        if NS.SetStyle(argument) then message("Playstyle: " .. NS.Route.labels[argument]) else message("Playstyle must be speed, balanced, gear or story.") end
     elseif command == "spec" then
         if NS.SetSpec(argument) then message("Spec: " .. argument) else message("Spec must not be empty.") end
-    elseif command == "help" then message("/fp | demo | live | diag | compact | reset | goal <leveling|gear|professions|balanced> | spec <name>. Demo data is fictional; live scores omit effects and set bonuses; ambiguous one-hand weapons need manual comparison.")
+    elseif command == "help" then message("/fp | setup | diag | compact | arrow | opacity <30-100> | reset | style <speed|balanced|gear|story> | spec <name>. Scores omit effects and set bonuses; ambiguous one-hand weapons need manual comparison.")
     else NS.UI.Toggle() end
 end
