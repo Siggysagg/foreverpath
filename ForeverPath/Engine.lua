@@ -173,6 +173,25 @@ function E.NextQuests(quests, player, profile, goalName, signals)
         end
         return count
     end
+    -- CHAIN-01 (#198): the unbranched continuation after a quest, as titles for the
+    -- card's chain stripe. Stops at a branch (the follow-up count covers those), at a
+    -- cycle, or after four titles - "..." marks a chain that continues past the cap.
+    local function chainOf(startId)
+        local titles, seen = {}, { [startId] = true }
+        local current = startId
+        while #titles < 4 do
+            local kids = children[current] or {}
+            if #kids ~= 1 or seen[kids[1]] then return titles end
+            current = kids[1]
+            seen[current] = true
+            local node = quests[current]
+            if type(node) ~= "table" then return titles end
+            titles[#titles + 1] = node.title or ("Quest " .. tostring(node.questID or current))
+        end
+        local kids = children[current] or {}
+        if #kids == 1 and not seen[kids[1]] then titles[#titles + 1] = "..." end
+        return titles
+    end
     local rows = {}
     for id, node in pairs(quests) do
         local questID = node.questID or questNumber(id)
@@ -183,6 +202,9 @@ function E.NextQuests(quests, player, profile, goalName, signals)
         if ready then
             local row = { id = "next:" .. questID, questID = questID, title = node.title or ("Quest " .. questID),
                 kind = "quest", reasons = {}, gearGain = 0, unlocks = unlocks(id, {}) }
+            -- CHAIN-01 (#198): next-title for the "→ Opens:" line and the stripe titles.
+            row.chain = chainOf(id)
+            row.next = row.chain[1]
             local uncompared = false
             for _, reward in ipairs(node.rewards or {}) do
                 local slotInfo = (player.itemSlots or {})[reward.itemID]
@@ -251,6 +273,84 @@ function E.NextQuests(quests, player, profile, goalName, signals)
         end
     end
     return rows
+end
+
+-- CHAIN-01 (#198): what a quest opens, as pure data. Returns
+-- { unlocks = <transitive follow-up count>, next = <title of the first direct
+-- follow-up> }; next picks the lowest quest ID so table iteration order never
+-- decides what the UI shows. Unknown quest or no follow-ups: { 0, nil }.
+-- Unlike NextQuests this counts every imported follow-up, not only the ones the
+-- player's race/class allows - pass player-filtered quests for the card rows.
+function E.ChainInfo(quests, questID)
+    local out = { unlocks = 0, next = nil }
+    local want = tonumber(questID)
+    if type(quests) ~= "table" or not want then return out end
+    local children, startId = {}, nil
+    for id, node in pairs(quests) do
+        if type(node) == "table" then
+            if tonumber(node.questID or questNumber(id)) == want then startId = id end
+            if type(node.requires) == "table" then
+                for _, required in ipairs(node.requires) do
+                    children[required] = children[required] or {}
+                    children[required][#children[required] + 1] = id
+                end
+            end
+        end
+    end
+    if startId == nil then return out end
+    local seen = {}
+    local function count(id)
+        local total = 0
+        for _, child in ipairs(children[id] or {}) do
+            if not seen[child] then seen[child] = true; total = total + 1 + count(child) end
+        end
+        return total
+    end
+    out.unlocks = count(startId)
+    local bestKey, bestTitle
+    for _, child in ipairs(children[startId] or {}) do
+        local node = quests[child]
+        if type(node) == "table" and node.title then
+            local key = tonumber(node.questID or questNumber(child)) or math.huge
+            if not bestKey or key < bestKey then bestKey, bestTitle = key, node.title end
+        end
+    end
+    out.next = bestTitle
+    return out
+end
+
+-- RADAR-01 (#199): quest givers near the player, as pure data. `quests` is the
+-- already character-filtered set from NextQuests (the available rows' quest
+-- nodes, keyed any way the caller likes); availability is NOT re-decided here.
+-- Only nodes with an imported ATT position on `mapID` count. Distance is
+-- euclidean in map percent (positions are 0-100 in the data) — yards would need
+-- a per-map scale and are not guessed. Sorted by distance, quest ID as the
+-- deterministic tiebreaker; at most `limit` rows (default 5), each shaped
+-- { questID, title, x, y, distance }.
+function E.NearbyGivers(quests, mapID, playerX, playerY, limit)
+    local out = {}
+    local want = tonumber(mapID)
+    if type(quests) ~= "table" or not want
+        or type(playerX) ~= "number" or type(playerY) ~= "number" then return out end
+    for id, node in pairs(quests) do
+        if type(node) == "table" then
+            local pos = node.position
+            local questID = tonumber(node.questID) or questNumber(id)
+            if questID and type(pos) == "table" and tonumber(pos.map) == want
+                and type(pos.x) == "number" and type(pos.y) == "number" then
+                local dx, dy = pos.x - playerX, pos.y - playerY
+                out[#out + 1] = { questID = questID, title = node.title or ("Quest " .. questID),
+                    x = pos.x, y = pos.y, distance = math.sqrt(dx * dx + dy * dy) }
+            end
+        end
+    end
+    table.sort(out, function(a, b)
+        if a.distance == b.distance then return a.questID < b.questID end
+        return a.distance < b.distance
+    end)
+    limit = limit or 5
+    while #out > limit do table.remove(out) end
+    return out
 end
 
 -- Upgrade finder (UPGRADE_PLAN spor C): the best available quest reward per slot,
@@ -351,4 +451,33 @@ function E.FlightTime(flights, faction, fromNode, toNode)
     local seconds = routes and (routes[toNode] or routes[tostring(toNode)])
     if type(seconds) == "number" then return seconds end
     return nil
+end
+
+-- Milestones (MILE-01/#200): pure decision from observed session counters, so every
+-- number shown was actually counted. Fires only exactly on a celebration point and
+-- returns nil otherwise (nothing shown): every 10th completed quest, and each level
+-- reached. `levelsGained` is the level just reached with the latest level-up (its
+-- own number, so "Level 16!" is the real level); pass 0 when no level-up is part of
+-- this event. A level milestone wins when both land on the same event. `next` names
+-- the next celebration point of the same kind; `kind` tells the renderer which.
+function E.Milestones(questsDone, levelsGained)
+    local quests, level = tonumber(questsDone) or 0, tonumber(levelsGained) or 0
+    if level > 0 then
+        return { kind = "level", message = string.format("Level %d!", level), isMilestone = true, next = level + 1 }
+    end
+    if quests > 0 and quests % 10 == 0 then
+        return { kind = "quests", message = string.format("%d quests done!", quests), isMilestone = true, next = quests + 10 }
+    end
+    return nil
+end
+
+-- Streak (MILE-01/#200): `questsInARow` counts completed quests since the last death;
+-- `diedSinceLastQuest` is true when PLAYER_DEAD fired after the previous completed
+-- quest, which breaks the row (nil: nothing shown). Fewer than two quests is not a
+-- row yet. The caller tracks the count and the death flag; this only decides and words.
+function E.Streak(questsInARow, diedSinceLastQuest)
+    if diedSinceLastQuest then return nil end
+    local count = tonumber(questsInARow) or 0
+    if count < 2 then return nil end
+    return string.format("%d quest%s in a row without dying", count, count == 1 and "" or "s")
 end

@@ -272,7 +272,8 @@ end
 -- One quest re-checked end to end: flagged state, log membership and readiness.
 local function recheckQuest(state, questID, isDone, logIndex, isReady)
     C.stats.flagged = C.stats.flagged + 1
-    state.completed[questID] = call(isDone, questID) and true or nil
+    -- SEC-02: a nil API result must never erase known completion.
+    if call(isDone, questID) then state.completed[questID] = true end
     C.stats.logIndex = C.stats.logIndex + 1
     local index = call(logIndex, questID)
     if index and index ~= 0 then
@@ -389,6 +390,28 @@ function C.NextQuests(state, profile)
     end
     local rows = profile and NS.Route.Plan(data, NS.Route.ActiveRoutes(), player, profile, NS.settings.style) or {}
     state.upgrades = profile and NS.Engine.BestUpgrades(NS.Route.lastAvailable or {}, player, profile) or {}
+    -- RADAR-01 (#199): quest givers near the player, over the ATT positions of the
+    -- quests NextQuests already deemed available (lastAvailable, fresh only when
+    -- Plan ran, hence the profile gate). C_Map positions are 0-1 fractions; the
+    -- engine wants map percent like the imported data. Without a map ID or a
+    -- player position nothing is shown — never a guess.
+    state.nearby = nil
+    if profile and player.mapID then
+        local position = call(api(C_Map, "GetPlayerMapPosition"), player.mapID, "player")
+        if type(position) == "table" then
+            local px, py = position.x, position.y
+            if position.GetXY then px, py = position:GetXY() end
+            if type(px) == "number" and type(py) == "number" then
+                local available = {}
+                for _, row in ipairs(NS.Route.lastAvailable or {}) do
+                    local node = byQuestID[row.questID]
+                    if node then available[row.questID] = node end
+                end
+                state.nearby = { map = player.mapID,
+                    givers = NS.Engine.NearbyGivers(available, player.mapID, px * 100, py * 100) }
+            end
+        end
+    end
     local verb = { accept = "Accept: ", turnin = "Turn in: ", complete = "Complete: " }
     for _, row in ipairs(rows) do
         local title = call(titleFor, row.questID)

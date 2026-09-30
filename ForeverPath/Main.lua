@@ -157,7 +157,14 @@ function NS.ImportRoute(text)
     NS.settings.customRouteText = text
     NS.Route.SetCustomRoute(text)
     local guides, steps = NS.Route.CustomRouteStats()
-    local status = text and (guides .. " guide(s), " .. steps .. " step(s) imported - your route wins") or "Custom route removed"
+    local status
+    if not text then
+        status = "Custom route removed"
+    elseif guides == 0 then
+        status = "No valid guides found in that text - check the format with Insert example"
+    else
+        status = guides .. " guide(s), " .. steps .. " step(s) imported - your route wins"
+    end
     if NS.UI.routeWin then NS.UI.routeWin.status:SetText(status) end
     message(status)
     NS.Refresh()

@@ -31,6 +31,16 @@ local function verdictColor(verdict)
 end
 U.panels = {}
 
+-- Streaks (MILE-01/#200): a death breaks the quest row. PLAYER_DEAD has no other
+-- consumer, so one frame listens for it here and only raises a flag — every
+-- decision about the streak lives in the pure Engine.Streak.
+if CreateFrame then
+    local deathFrame = CreateFrame("Frame")
+    U.deathFrame = deathFrame
+    pcall(deathFrame.RegisterEvent, deathFrame, "PLAYER_DEAD")
+    deathFrame:SetScript("OnEvent", function() U.diedSinceLastQuest = true end)
+end
+
 local function opacity() return tonumber(NS.settings and NS.settings.opacity) or 0.85 end
 local function paint(f)
     if f.SetBackdropColor then
@@ -188,7 +198,7 @@ function U.Create()
     local f = panel(UIParent, "ForeverPathWindow", 780, 560)
     U.frame = f
     f:SetFrameStrata("DIALOG")
-    f:SetScale(math.min(1, UIParent:GetWidth()/820, UIParent:GetHeight()/600))
+    f:SetScale(tonumber(NS.settings.scale) or math.min(1, UIParent:GetWidth()/820, UIParent:GetHeight()/600))
     draggable(f, "position")
     U.Restore(f, "position", "CENTER")
     table.insert(UISpecialFrames, "ForeverPathWindow")
@@ -446,6 +456,36 @@ function U.CompactText(row, message)
     return title, reason
 end
 
+-- Pure: the #198 chain line for a card. Rows with follow-ups get "→ Opens: <next
+-- quest title>" when exactly one titled follow-up is known, else "→ Opens N
+-- follow-ups". Nil for rows without follow-ups.
+function U.ChainLine(row)
+    if type(row) ~= "table" or not row.unlocks or row.unlocks <= 0 then return nil end
+    if row.unlocks == 1 and row.next then return "→ Opens: " .. tostring(row.next) end
+    return string.format("→ Opens %d follow-up%s", row.unlocks, row.unlocks == 1 and "" or "s")
+end
+
+-- Pure: the horizontal chain stripe text "this quest → next → next-next" (#198).
+-- Nil unless the chain is unbranched (Engine's branching rows show a count instead).
+-- One line only: long stripes are byte-truncated with "..." to keep the card layout.
+function U.ChainText(row)
+    if type(row) ~= "table" or type(row.chain) ~= "table" or #row.chain == 0 then return nil end
+    local text = tostring(row.title or "Quest") .. " → " .. table.concat(row.chain, " → ")
+    if #text > 84 then text = string.sub(text, 1, 83) .. "..." end
+    return text
+end
+
+-- Pure: one nearby-giver line for the RADAR-01 (#199) section: "4.2 — Title".
+-- The number is map percent (house rule: yards need a per-map scale, so none is
+-- invented); the section header says so. Nil for non-table input; long lines are
+-- byte-truncated with "..." like the other single-line texts.
+function U.NearbyText(giver)
+    if type(giver) ~= "table" then return nil end
+    local text = string.format("%.1f — %s", tonumber(giver.distance) or 0, tostring(giver.title or "Quest"))
+    if #text > 92 then text = string.sub(text, 1, 91) .. "..." end
+    return text
+end
+
 -- Everything inside pcall: a client-specific error must leave a visible card,
 -- never an empty one (BUG-01).
 local function renderCompact(rows, state)
@@ -464,6 +504,28 @@ local function renderCompact(rows, state)
     if h.reason.lastText ~= reason then
         h.reason:SetText(reason); h.reason.lastText = reason
         animate(h.reason, function(target, value) target:SetAlpha(value) end, 0.35, 1, 0.15)
+    end
+    -- Milestones and streaks (MILE-01/#200): a fresh milestone takes over the reason
+    -- line for one render (green, like the hero flash); a live streak rides along
+    -- after the suggestion when it fits the same budget as the distance chip.
+    -- Both texts come from the pure engine — no wording decisions here.
+    if U.milestoneMessage then
+        reason = U.milestoneMessage
+        if h.reason.lastText ~= reason then
+            h.reason:SetText(reason); h.reason.lastText = reason
+            animate(h.reason, function(target, value) target:SetAlpha(value) end, 0.35, 1, 0.15)
+        end
+        h.reason:SetTextColor(U.theme.green[1], U.theme.green[2], U.theme.green[3])
+    else
+        h.reason:SetTextColor(muted[1], muted[2], muted[3])
+        local streak = NS.Engine and NS.Engine.Streak and NS.Engine.Streak(U.streak or 0, U.diedSinceLastQuest) or nil
+        if streak and #reason + #streak + 3 <= 63 then
+            reason = reason .. " · " .. streak
+            if h.reason.lastText ~= reason then
+                h.reason:SetText(reason); h.reason.lastText = reason
+                animate(h.reason, function(target, value) target:SetAlpha(value) end, 0.35, 1, 0.15)
+            end
+        end
     end
     local color = first and U.theme.verdict[first.verdict] or U.theme.accent
     h.stripe:SetColorTexture(color[1], color[2], color[3])
@@ -498,6 +560,72 @@ local function renderUpgrades(state)
     U.scroll:ClearAllPoints(); U.scroll:SetPoint("TOPLEFT",24,-372)
 end
 
+-- RADAR-01 (#199): the NEARBY section sits at the top of the card list. Rows come
+-- from Engine.NearbyGivers via state.nearby (pure data; rendering owns no logic)
+-- and are rewritten only inside Render — never per frame. Clicking a row pins the
+-- arrow and waypoint on that giver (NS.Nav.Pin), same as a card's "Show way".
+local NEARBY_MAX = 5
+
+local function nearbyRow(index)
+    if U.nearbyRows[index] then return U.nearbyRows[index] end
+    local f = CreateFrame("Button", nil, U.child)
+    f:SetSize(664, 16)
+    f.text = label(f, "", 12, 16, 0, 640)
+    f.giver, f.map = nil, nil
+    f:SetScript("OnClick", function(self)
+        if self.giver and self.map then
+            NS.Nav.Pin({ id = "nearby:" .. tostring(self.giver.questID),
+                target = { map = self.map, x = self.giver.x, y = self.giver.y },
+                title = self.giver.title })
+        end
+    end)
+    f:SetScript("OnEnter", function(self)
+        if self.text then self.text:SetTextColor(unpack(accent)) end
+    end)
+    f:SetScript("OnLeave", function(self)
+        if self.text then self.text:SetTextColor(unpack(U.theme.textDim)) end
+    end)
+    U.nearbyRows[index] = f
+    return f
+end
+
+-- Pure display: shows the header and at most NEARBY_MAX rows, hides the rest,
+-- and returns the height the section consumed so the cards start below it.
+local function renderNearby(state)
+    local nearby = state.mode ~= "rewards" and type(state.nearby) == "table" and state.nearby or nil
+    local givers = nearby and type(nearby.givers) == "table" and nearby.givers or {}
+    if not U.nearbyHeader then
+        U.nearbyHeader = label(U.child, "", 12, 16, 0, 640)
+        U.nearbyHeader:SetTextColor(unpack(accent))
+        U.nearbyRows = {}
+        for i = 1, NEARBY_MAX do nearbyRow(i):SetPoint("TOPLEFT", 16, -18 - (i - 1) * 16) end
+    end
+    local shown = math.min(#givers, NEARBY_MAX)
+    if shown == 0 then
+        U.nearbyHeader:Hide()
+        for i = 1, NEARBY_MAX do
+            U.nearbyRows[i].giver, U.nearbyRows[i].map = nil, nil
+            U.nearbyRows[i]:Hide()
+        end
+        return 0
+    end
+    if U.nearbyHeader.lastText ~= true then U.nearbyHeader:SetText("QUEST GIVERS NEARBY — distance in map %"); U.nearbyHeader.lastText = true end
+    U.nearbyHeader:Show()
+    for i = 1, NEARBY_MAX do
+        local row, giver = U.nearbyRows[i], givers[i]
+        if giver then
+            local text = U.NearbyText(giver)
+            if row.lastText ~= text then row.text:SetText(text); row.lastText = text end
+            row.giver, row.map = giver, nearby.map
+            row:Show()
+        else
+            row.giver, row.map = nil, nil
+            row:Hide()
+        end
+    end
+    return 18 + shown * 16 + 8
+end
+
 
 -- Card factory: each quest/recommendation row in the scroll list.
 local function card(index)
@@ -512,6 +640,11 @@ local function card(index)
     f.title = label(f,"",15,54,-14,400)
     f.badge = label(f,"",11,460,-16,190); f.badge:SetJustifyH("RIGHT")
     f.body = label(f,"",12,56,-42,480); f.body:SetJustifyV("TOP")
+    -- CHAIN-01 (#198): horizontal chain stripe ("quest1 → quest2 → quest3"),
+    -- accent-colored; anchored under the body during Render.
+    f.chain = label(f,"",12,16,-56,560)
+    f.chain:SetTextColor(unpack(accent))
+    f.chain:Hide()
     f.way = button(f,"Show way",548,-38,100,function() if f.row then NS.Nav.Pin(f.row) end end, 24)
     f:EnableMouse(true)
     f:SetScript("OnEnter",function(self)
@@ -525,6 +658,61 @@ local function card(index)
     f:SetScript("OnMouseUp",function(self) if self.row then U.Provenance(self.row, self) end end)
     U.cards[index] = f
     return f
+end
+
+-- Milestones (MILE-01/#200): a green flash in the hero panel, same treatment as the
+-- ding celebration (UX-03) — green border, green title, revert after 0.8s. The turn-
+-- in ding already sounds; milestones add no second sound on top of it.
+local function flashHero(message)
+    if not (U.hero and U.hero:IsShown()) then return end
+    if NS.settings.animations == false then return end
+    if not (C_Timer and C_Timer.After) then return end  -- no timer: skip the flash, the card message still shows
+    if U.hero.SetBackdropBorderColor then
+        U.hero:SetBackdropBorderColor(U.theme.green[1], U.theme.green[2], U.theme.green[3], 0.9)
+    end
+    U.hero.title:SetText(message)
+    U.hero.title:SetTextColor(U.theme.green[1], U.theme.green[2], U.theme.green[3])
+    C_Timer.After(0.8, function()
+        if U.hero and U.hero.title then
+            U.hero.title:SetTextColor(unpack(U.theme.text))
+            if U.hero.SetBackdropBorderColor then
+                U.hero:SetBackdropBorderColor(U.theme.border[1], U.theme.border[2], U.theme.border[3], 0.9)
+            end
+            NS.Refresh()
+        end
+    end)
+end
+
+-- Milestones and streaks (MILE-01/#200): detects crossings between renders with
+-- last-seen markers (the same pattern as every last* key in this file); the decision
+-- and wording are pure (Engine.Milestones / Engine.Streak), rendering owns no logic.
+-- A level-up names its own level; a quest event passes 0 so only quest points fire.
+-- The streak counts quests since the last death; a death between quests restarts the
+-- row at the next completion.
+local function renderMilestones(state)
+    U.milestoneMessage = nil
+    local session = (NS.Client and NS.Client.session) or {}
+    local questsDone = tonumber(session.questsDone) or 0
+    local level = tonumber(state.level) or 0
+    local result
+    if U.lastLevel and level > U.lastLevel then
+        result = NS.Engine.Milestones(questsDone, level)
+    elseif U.lastQuests and questsDone > U.lastQuests then
+        result = NS.Engine.Milestones(questsDone, 0)
+    end
+    if U.lastQuests and questsDone > U.lastQuests then
+        if U.diedSinceLastQuest then U.streak, U.diedSinceLastQuest = 0, false end
+        U.streak = (U.streak or 0) + (questsDone - U.lastQuests)
+    end
+    U.lastLevel, U.lastQuests = level, questsDone
+    if result and result.isMilestone then
+        U.milestoneMessage = result.message
+        if result.kind == "quests" and result.next then
+            U.milestoneMessage = string.format("%s · next: %d quests", result.message, result.next)
+        end
+        flashHero(result.message)
+    end
+    return U.milestoneMessage
 end
 
 function U.Render(state)
@@ -582,7 +770,9 @@ function U.Render(state)
         U.hero.row = nil
         U.hero:Hide()
     end
-    local y = 0
+    -- RADAR-01 (#199): the nearby section consumes the top of the card list;
+    -- the cards start below whatever it used (0 when hidden).
+    local y = renderNearby(state)
     for i = 1, math.max(1,#rows) do
         local row = rows[i]
         local c = card(i)
@@ -595,7 +785,27 @@ function U.Render(state)
         local color = row and U.theme.verdict[row.verdict] or U.theme.accent
         if row and row.verdict == "Skip" then color = U.theme.muted end
         c.stripe:SetColorTexture(color[1], color[2], color[3])
-        c.body:SetText(row and table.concat(row.reasons or {},"\n") or state.message or "No suggestions yet.")
+        -- CHAIN-01 (#198): the engine's plain "Opens N follow-up quest(s)" reason
+        -- carries the same count as the arrow line, so swap rather than show both.
+        local bodyLines = {}
+        for _, reason in ipairs(row and row.reasons or {}) do
+            if not (row.unlocks and row.unlocks > 0 and type(reason) == "string"
+                and string.match(reason, "^Opens %d+ follow%-up quests?$")) then
+                bodyLines[#bodyLines + 1] = reason
+            end
+        end
+        local arrow = U.ChainLine(row)
+        if arrow then bodyLines[#bodyLines + 1] = arrow end
+        c.body:SetText(row and table.concat(bodyLines, "\n") or state.message or "No suggestions yet.")
+        local chainText = U.ChainText(row)
+        if chainText then
+            c.chain:SetText(chainText)
+            c.chain:ClearAllPoints()
+            c.chain:SetPoint("TOPLEFT", c.body, "BOTTOMLEFT", 0, -2)
+            c.chain:Show()
+        else
+            c.chain:Hide()
+        end
         c.link = row and row.link or nil
         c.row = row
         if c.lastRowId ~= (row and row.id or nil) then
@@ -614,9 +824,10 @@ function U.Render(state)
             c.title:ClearAllPoints(); c.title:SetPoint("TOPLEFT",16,-12); c.title:SetWidth(440)
             c.body:ClearAllPoints(); c.body:SetPoint("TOPLEFT",16,-38); c.body:SetWidth(520)
         end
-        -- Cards grow with their explanation instead of clipping it.
+        -- Cards grow with their explanation instead of clipping it (the chain
+        -- stripe from #198 grows the card by its own line).
         local textHeight = c.body.GetStringHeight and c.body:GetStringHeight() or 56
-        local height = 50 + math.max(28, textHeight)
+        local height = 50 + math.max(28, textHeight) + (chainText and 18 or 0)
         c.body:SetHeight(textHeight)
         c:SetHeight(height)
         c.stripe:SetHeight(height) -- the stripe grows and shrinks with the card
@@ -629,6 +840,7 @@ function U.Render(state)
     renderUpgrades(state)
     local offset = U.scroll:GetVerticalScroll()
     U.scroll:SetVerticalScroll(math.min(offset,math.max(0,U.child:GetHeight()-U.scroll:GetHeight())))
+    renderMilestones(state)
     renderCompact(rows, state)
     if U.sessionLine then
         local stats = NS.Engine.SessionStats(NS.Client.session, GetTime and GetTime() or 0)
@@ -741,15 +953,18 @@ function U.RouteImport()
 end
 
 -- Ding-feiring (UX-03): when the hero step's quest is turned in, flash green,
--- show DONE + session count, then fade to the next step. Respects the animations
--- and sound settings; without them it is an instant swap.
+-- show DONE + session count, then fade to the next step. The compact card
+-- celebrates the same turn-in (#208): green stripe and a Done! title, reverted
+-- by the next render's verdict repaint. Respects the animations and sound
+-- settings; without them it is an instant swap.
 function U.Celebrate(questID)
     if not U.hero or not U.hero.row then return end
     if U.hero.row.questID ~= questID then return end
     local session = NS.Client.session or {}
     local stats = NS.Engine.SessionStats(session, GetTime and GetTime() or 0)
+    local quests = stats.quests or 0
     local doneText = string.format("%s — DONE!  %d quest%s this session",
-        tostring(U.hero.row.title or "Step"), stats.quests or 0, (stats.quests or 0) == 1 and "" or "s")
+        tostring(U.hero.row.title or "Step"), quests, quests == 1 and "" or "s")
     if NS.settings.animations ~= false then
         -- Flash the hero panel green: set border, swap text, revert after 0.8s.
         if U.hero.SetBackdropBorderColor then
@@ -757,6 +972,17 @@ function U.Celebrate(questID)
         end
         U.hero.title:SetText(doneText)
         U.hero.title:SetTextColor(U.theme.green[1], U.theme.green[2], U.theme.green[3])
+        -- Same celebration on the compact card (#208). The compact card can be
+        -- closed, so a missing U.hud must never reach this path; renderCompact
+        -- repaints the stripe with the verdict color on every render, and the
+        -- cleared lastText forces the title back to the row even when the next
+        -- render still shows the same quest.
+        local h = U.hud
+        if h and h.stripe and h.title then
+            h.stripe:SetColorTexture(U.theme.green[1], U.theme.green[2], U.theme.green[3])
+            h.title:SetText(string.format("✓ Done! %d quest%s", quests, quests == 1 and "" or "s"))
+            h.title.lastText = nil
+        end
         C_Timer.After(0.8, function()
             if U.hero and U.hero.title then
                 U.hero.title:SetTextColor(unpack(U.theme.text))

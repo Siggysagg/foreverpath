@@ -429,6 +429,10 @@ function R.DecodeRoute(text)
             local step = {}
             -- fields[1] is "step:<action>"; the remaining fields follow STEP_FIELDS order.
             step.a = string.sub(fields[1], 6)
+            -- SEC-01: only accept known actions from share strings
+            if step.a ~= "accept" and step.a ~= "turnin" and step.a ~= "complete" then
+                step.a = nil
+            end
             for index, key in ipairs(STEP_FIELDS) do
                 if key ~= "a" then
                     local value = fields[index]
