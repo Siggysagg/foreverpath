@@ -379,7 +379,13 @@ function U.Render(state)
         end
     else
         U.progress:Hide()
-        U.progressLabel:SetText("")
+        -- When quests are shown but no route covers the level range, say so instead
+        -- of silently hiding the progress area (UX-02).
+        if state.mode ~= "rewards" and #rows > 0 then
+            U.progressLabel:SetText("Route: no guide covers your level range yet - zone quests below")
+        else
+            U.progressLabel:SetText("")
+        end
     end
     local hero = heroPick(rows, state.mode)
     if hero then
@@ -574,9 +580,31 @@ local CHOICES = {
     { "story", "The world as Blizzard made it", "The route as a guide, plus every quest and story in your zone. Nothing is marked Skip." },
     { "dungeon", "Dungeon leveling", "Follow the RestedXP dungeon routes (runs dungeons while leveling). Side quests only for gear upgrades." },
 }
+-- Pure: the sanity line shown at the bottom of Setup. Green when data and client
+-- basics are in place; the exact gap when they are not - a broken install should
+-- be visible in the first five seconds, not discovered as "empty" (UX-01).
+function U.SetupSanity()
+    local questCount, guideCount = 0, 0
+    for _, zone in pairs(NS.Quests or {}) do
+        for _ in pairs(zone) do questCount = questCount + 1 end
+    end
+    for _ in ipairs((NS.Routes and NS.Routes.guides) or {}) do guideCount = guideCount + 1 end
+    if questCount == 0 then
+        return "Data problem: no quest database loaded - reinstall the ForeverPath folder", false
+    end
+    local missing = 0
+    for _, name in ipairs({ "GetQuestID", "GetBuildInfo" }) do
+        if type(_G[name]) ~= "function" then missing = missing + 1 end
+    end
+    if missing > 0 then
+        return string.format("Client check: %d core API(s) missing - send /fp diag", missing), false
+    end
+    return string.format("Data loaded: %d guides, %d quests - ready", guideCount, questCount), true
+end
+
 function U.Setup()
     if not U.setup then
-        local f = panel(UIParent,"ForeverPathSetup",480,430)
+        local f = panel(UIParent,"ForeverPathSetup",480,470)
         U.setup = f
         f:SetFrameStrata("FULLSCREEN_DIALOG"); f:SetPoint("CENTER")
         draggable(f, "setupPosition")
@@ -591,12 +619,19 @@ function U.Setup()
                 NS.settings.setupDone = true
                 f:Hide()
                 if NS.settings.compact ~= false then U.Compact(true) end
+                -- One-time reveal: the main window IS the "which quests first" answer.
+                U.Toggle()
             end, 60)
             b.title:ClearAllPoints(); b.title:SetPoint("TOPLEFT", 12, -10); b.title:SetText(choice[2])
             local desc = label(b,choice[3],11,12,-30,412); desc:SetTextColor(unpack(muted))
             f.choices[style] = b
         end
+        f.cardHint = label(f,"The small card under your map follows your next step - click it for details.",11,22,-414,436)
+        f.cardHint:SetTextColor(unpack(muted))
+        f.sanity = label(f,"",12,22,-434,436)
     end
+    local text, ok = U.SetupSanity()
+    U.setup.sanity:SetText((ok and "|cff37d68c" or "|cffe08a3c") .. text .. "|r")
     fadeIn(U.setup)
 end
 

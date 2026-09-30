@@ -1,7 +1,7 @@
 # ForeverPath
 
 <!-- foreverpath:download -->
-## ⬇️ Download — v0.7.0
+## ⬇️ Download — v0.7.1
 
 - **Direct download:** [ForeverPath.zip](https://github.com/Siggysagg/foreverpath/releases/latest/download/ForeverPath.zip) — unzip and copy the `ForeverPath` folder into `Interface/AddOns`.
 - **WowUp (auto-updates):** Get Addons → **Install from URL** → `https://github.com/Siggysagg/foreverpath`
@@ -10,54 +10,32 @@
 
 **A lightweight progression guide for WoW Forever.**
 
-ForeverPath helps you make clearer next-step choices while you play. It gives compact, readable tips for quests, gear and professions, and updates recommendations as your character changes.
+ForeverPath tells you what to do next while you level — and explains why. It follows
+your route, compares quest rewards against your equipped gear, and updates its
+recommendations as your character changes. Everything runs locally inside the game.
 
-> **Status:** `v0.7.0` — early testing release for WoW Forever.
+> **Status:** `v0.7.1` — early testing release for WoW Forever.
 
 ## What it does
 
-- Shows a compact recommendation card during normal play
-- Compares quest rewards with your equipped gear when the client provides enough information
-- Supports goal styles for leveling, gear, professions and balanced progression
-- Explains the main reason behind a recommendation
-- Handles missing or uncertain data conservatively
-- Includes a demo mode with clearly marked synthetic examples
-
-ForeverPath runs locally inside the game. It does not make live AI requests or require an external service while you play.
+- A clear **NOW panel**: your next route step with objective progress and distance
+- **Dungeon leveling** playstyle, including your own imported route (`/fp route`)
+- **Share your route** with friends as a pasteable string
+- **Upgrade finder**: the best available quest reward per gear slot, in percent
+- Quest reward comparison with your equipped gear, in the quest dialog
+- The **why** behind every recommendation, with visible sources and confidence
+- Session stats (XP/hour, time to level) and a CPU meter — built to stay cheap
+- Plays styles: Speedrun, Balanced, Gear first, Story, Dungeon
 
 ## Install
 
-1. Download the latest beta from [Releases](https://github.com/Siggysagg/foreverpath/releases).
-2. Unzip the download.
-3. Copy the `ForeverPath` folder into your WoW Forever `Interface/AddOns` folder.
-4. Start the game and enable **ForeverPath** on the character selection screen.
-5. Use `/fp` in-game to open the addon.
+1. **WowUp (auto-updates):** Get Addons → **Install from URL** → paste this repository's URL.
+2. **Manual:** download `ForeverPath.zip` from Releases, unzip, and copy the `ForeverPath`
+   folder into `Interface/AddOns/`.
+3. Start the game and type `/fp`.
 
-The beta is experimental. The exact supported client build and some in-game compatibility details are still being verified.
+## Notes
 
-## Useful commands
-
-```text
-/fp              Open ForeverPath
-/fp compact      Toggle the compact recommendation card
-/fp demo         Show synthetic demo recommendations
-/fp goal leveling
-/fp goal gear
-/fp goal professions
-/fp goal balanced
-```
-
-## Feedback
-
-Please report bugs and include:
-
-- WoW Forever client build and language
-- What you were doing when the issue appeared
-- Any Lua error text
-- The output of `/fp diag` when relevant
-
-## License
-
-The addon code is MIT licensed. Game-data files carry their own attribution and license information. See the license files included in the download.
-
-This project is independent of Blizzard Entertainment.
+- Runs entirely locally: no live AI requests or external services while you play.
+- No player names or account data are collected; `/fp diag` output is safe to share.
+- Built for the WoW Forever client; report issues in the Forever Discord channel.
