@@ -132,6 +132,7 @@ events:SetScript("OnEvent",function(_,event,arg1)
     elseif event == "QUEST_ACCEPTED" or event == "QUEST_TURNED_IN" then
         invalidateDismissedTip(event, arg1)
         NS.Client.MarkQuestDirty(arg1)  -- arg1 is the quest ID; only it is rechecked (#101)
+        if event == "QUEST_TURNED_IN" and NS.UI and NS.UI.Celebrate then NS.UI.Celebrate(arg1) end
     elseif event == "GET_ITEM_INFO_RECEIVED" or event == "ITEM_DATA_LOAD_RESULT" then
         if not NS.Client.requested[arg1] then return end
     end

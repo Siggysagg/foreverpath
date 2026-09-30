@@ -188,6 +188,12 @@ end
 local function card(index)
     if U.cards[index] then return U.cards[index] end
     local f = panel(U.child,nil,664,110,0.7)
+    -- Verdict-colored stripe (UX-05): the same cue the compact card has, so every
+    -- card's state reads in miniature before any text. A plain texture: no scripts,
+    -- no animate() (textures do not support OnUpdate, #177/BUG-02).
+    f.stripe = f:CreateTexture(nil,"ARTWORK")
+    f.stripe:SetSize(3,110); f.stripe:SetPoint("TOPLEFT",0,0)
+    f.stripe:SetColorTexture(unpack(accent))
     f.icon = f:CreateTexture(nil,"ARTWORK")
     f.icon:SetSize(34,34); f.icon:SetPoint("TOPLEFT",12,-10)
     f.icon:SetTexCoord(0.08,0.92,0.08,0.92); f.icon:Hide()
@@ -417,6 +423,11 @@ function U.Render(state)
         c.badge:SetText(row and row.verdict or "Waiting")
         c.badge:SetTextColor(verdictColor(row and row.verdict or "Waiting"))
         c.title:SetTextColor(unpack(row and row.verdict == "Skip" and U.theme.muted or U.theme.text))
+        -- UX-05: the stripe carries the verdict color. Skip de-emphasizes to muted,
+        -- matching its gray title, instead of alarm-red.
+        local color = row and U.theme.verdict[row.verdict] or U.theme.accent
+        if row and row.verdict == "Skip" then color = U.theme.muted end
+        c.stripe:SetColorTexture(color[1], color[2], color[3])
         c.body:SetText(row and table.concat(row.reasons or {},"\n") or state.message or "No suggestions yet.")
         c.link = row and row.link or nil
         c.row = row
@@ -441,6 +452,7 @@ function U.Render(state)
         local height = 50 + math.max(28, textHeight)
         c.body:SetHeight(textHeight)
         c:SetHeight(height)
+        c.stripe:SetHeight(height) -- the stripe grows and shrinks with the card
         c:ClearAllPoints(); c:SetPoint("TOPLEFT", 0, -y)
         y = y + height + 8
         c:Show()
@@ -559,6 +571,41 @@ function U.RouteImport()
     end
     U.routeWin.edit:SetText(NS.settings.customRouteText or "")
     fadeIn(U.routeWin)
+end
+
+-- Ding-feiring (UX-03): when the hero step's quest is turned in, flash green,
+-- show DONE + session count, then fade to the next step. Respects the animations
+-- and sound settings; without them it is an instant swap.
+function U.Celebrate(questID)
+    if not U.hero or not U.hero.row then return end
+    if U.hero.row.questID ~= questID then return end
+    local session = NS.Client.session or {}
+    local stats = NS.Engine.SessionStats(session, GetTime and GetTime() or 0)
+    local doneText = string.format("%s — DONE!  %d quest%s this session",
+        tostring(U.hero.row.title or "Step"), stats.quests or 0, (stats.quests or 0) == 1 and "" or "s")
+    if NS.settings.animations ~= false then
+        -- Flash the hero panel green: set border, swap text, revert after 0.8s.
+        if U.hero.SetBackdropBorderColor then
+            U.hero:SetBackdropBorderColor(U.theme.green[1], U.theme.green[2], U.theme.green[3], 0.9)
+        end
+        U.hero.title:SetText(doneText)
+        U.hero.title:SetTextColor(U.theme.green[1], U.theme.green[2], U.theme.green[3])
+        C_Timer.After(0.8, function()
+            if U.hero and U.hero.title then
+                U.hero.title:SetTextColor(unpack(U.theme.text))
+                if U.hero.SetBackdropBorderColor then
+                    U.hero:SetBackdropBorderColor(U.theme.border[1], U.theme.border[2], U.theme.border[3], 0.9)
+                end
+                NS.Refresh()
+            end
+        end)
+    else
+        -- Instant: just refresh to the next step.
+        NS.Refresh()
+    end
+    if NS.settings.sounds ~= false and PlaySound then
+        pcall(PlaySound, 828)  -- SOUNDKIT.IG_QUEST_LOG_ABANDON_QUEST is harsh; 828 is a soft ding
+    end
 end
 
 -- What the compact card last showed, for Diagnostics: makes "it showed nothing"
@@ -724,30 +771,33 @@ function U.Settings()
         f.compact = button(f,"Tips card: on",134,-222,104,function()
             U.ToggleCompact(); U.SyncSettings(f)
         end, 26)
-        f.animations = button(f,"Animations: on",22,-252,150,function()
+        f.animations = button(f,"Animations: on",22,-258,150,function()
             NS.settings.animations = NS.settings.animations == false
             U.SyncSettings(f)
         end, 26)
-        label(f,"Opacity",12,258,-214,100)
-        f.opacityMinus = button(f,"-",246,-222,22,function()
+        -- BUG-03 (#179): each stepper gets its own row. A label's SetWidth box is the
+        -- worst case for LEFT-justified text, so boxes that clear the buttons mean the
+        -- rendered text clears them too; rows are 26px buttons on a 36px pitch.
+        f.opacityLabel = label(f,"Opacity",12,22,-300,120)
+        f.opacityMinus = button(f,"-",150,-294,22,function()
             U.SetOpacity(math.max(0.30, (NS.settings.opacity or 0.85) - 0.10)); U.SyncSettings(f)
         end, 26)
-        f.opacityValue = label(f,"85%",12,272,-214,60)
-        f.opacityPlus = button(f,"+",330,-222,22,function()
+        f.opacityValue = label(f,"85%",12,178,-300,50)
+        f.opacityPlus = button(f,"+",234,-294,22,function()
             U.SetOpacity(math.min(1.0, (NS.settings.opacity or 0.85) + 0.10)); U.SyncSettings(f)
         end, 26)
-        label(f,"Tip delay",12,364,-214,100)
-        f.throttleMinus = button(f,"-",352,-222,22,function()
+        f.throttleLabel = label(f,"Tip delay",12,22,-336,120)
+        f.throttleMinus = button(f,"-",150,-330,22,function()
             NS.settings.tipThrottleSeconds = math.max(0, (tonumber(NS.settings.tipThrottleSeconds) or 10) - 5)
             U.SyncSettings(f)
         end, 26)
-        f.throttleValue = label(f,"10s",12,378,-214,44)
-        f.throttlePlus = button(f,"+",430,-222,22,function()
+        f.throttleValue = label(f,"10s",12,178,-336,50)
+        f.throttlePlus = button(f,"+",234,-330,22,function()
             NS.settings.tipThrottleSeconds = math.min(60, (tonumber(NS.settings.tipThrottleSeconds) or 10) + 5)
             U.SyncSettings(f)
         end, 26)
-        label(f,"Positions",13,22,-266,240)
-        button(f,"Reset all window positions",22,-288,220,function()
+        label(f,"Positions",13,22,-368,240)
+        f.resetPositions = button(f,"Reset all window positions",22,-390,220,function()
             NS.ResetPositions(); U.SyncSettings(f)
         end, 26)
         local meta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
