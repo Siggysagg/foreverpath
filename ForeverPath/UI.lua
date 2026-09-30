@@ -300,6 +300,10 @@ function U.CompactText(row, message)
     if type(row) == "table" then
         title = tostring(row.title or "Next step")
         reason = tostring((row.reasons or {})[1] or row.verdict or "")
+        -- Dungeon flow: explain WHY the player sees leveling quests in dungeon mode.
+        if NS.settings.style == "dungeon" and not row.isDungeonStep then
+            reason = "Leveling route (dungeon guides start at 13) · " .. reason
+        end
     else
         title = "ForeverPath"
         reason = tostring(message or "")
@@ -381,7 +385,11 @@ function U.Render(state)
     end
     if stepRow then
         U.progress:Show()
-        U.progressLabel:SetText(string.format("Route: %s — step %d of %d", stepRow.guideName or "?", stepRow.stepIndex or 0, stepRow.stepTotal))
+        local routeLabel = string.format("Route: %s — step %d of %d", stepRow.guideName or "?", stepRow.stepIndex or 0, stepRow.stepTotal)
+        if NS.settings.style == "dungeon" and not stepRow.isDungeonStep then
+            routeLabel = routeLabel .. "  (dungeon guides start at level 13)"
+        end
+        U.progressLabel:SetText(routeLabel)
         local target = 664 * math.min(1, math.max(0, (stepRow.stepIndex or 1) / stepRow.stepTotal))
         local key = stepRow.guideName .. ":" .. stepRow.stepIndex
         if U.progress.lastKey ~= key then

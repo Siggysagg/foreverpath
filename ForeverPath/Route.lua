@@ -183,6 +183,7 @@ function R.Plan(quests, routes, player, profile, style, limit)
             title = VERB[step.a] .. ": " .. titleOf(routes, quests, step.q), verdict = i == 1 and "Do next" or "Then",
             reasons = {}, slotIndexes = {},
             stepIndex = entry.index, stepTotal = entry.total, guideName = entry.guide.name }
+        row.isDungeonStep = entry.guide.group == "dungeon"
         if fact and fact.bestReward then row.bestReward = fact.bestReward end
         if position and position.map then row.target = { map = position.map, x = position.x, y = position.y } end
         local where = step.npc and ("Talk to " .. step.npc) or (step.a == "complete" and "Do the objectives" or nil)
