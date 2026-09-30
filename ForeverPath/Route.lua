@@ -46,6 +46,24 @@ function R.Chain(routes, player, style)
             fits[#fits + 1] = guide
         end
     end
+    -- Dungeon leveling before the first dungeon guide (level < 13): the dungeon
+    -- chain is empty. Fall back to the normal leveling route so the player still
+    -- gets a path (#177) — the dungeon guides take over when they fit.
+    if wantDungeon then
+        local level = player.level or 1
+        local hasFittingDungeon = false
+        for _, guide in ipairs(fits) do
+            if level >= guide.minLevel and level <= guide.maxLevel + 2 then hasFittingDungeon = true break end
+        end
+        if not hasFittingDungeon then
+            fits = {}
+            for _, guide in ipairs(routes and routes.guides or {}) do
+                if R.TagsMatch(guide.only, player) and guide.group ~= "dungeon" then
+                    fits[#fits + 1] = guide
+                end
+            end
+        end
+    end
     local function preferred(guide) return not guide.defaultfor or R.TagsMatch(guide.defaultfor, player) end
     local start
     for _, guide in ipairs(fits) do

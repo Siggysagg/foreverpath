@@ -74,12 +74,17 @@ local function animate(f, apply, from, to, duration)
         apply(f, to)
         return
     end
+    -- Texture widgets do not support OnUpdate scripts (client error reported in
+    -- #177): probe once; if the handler is rejected, apply the end state directly.
     local start = GetTime()
-    f:SetScript("OnUpdate", function(self)
+    local handler = function(self)
         local progress = math.min(1, (GetTime() - start) / (duration or 0.2))
         apply(self, from + (to - from) * progress)
         if progress >= 1 then self:SetScript("OnUpdate", nil) end
-    end)
+    end
+    if not pcall(f.SetScript, f, "OnUpdate", handler) then
+        apply(f, to)
+    end
 end
 local function draggable(f, key)
     f:SetClampedToScreen(true); f:SetMovable(true); f:EnableMouse(true); f:RegisterForDrag("LeftButton")
@@ -658,8 +663,8 @@ local STYLE_LABELS = { speed = "Speedrun", balanced = "Balanced", gear = "Gear f
 
 function U.SyncSettings(f)
     for style, b in pairs(f.styles) do
-        local active = NS.settings.style == style
-        b.title:SetTextColor(active and unpack(U.theme.accent) or unpack(U.theme.muted))
+        local color = NS.settings.style == style and U.theme.accent or U.theme.muted
+        b.title:SetTextColor(color[1], color[2], color[3])
     end
     local _, class
     if UnitClass then _, class = UnitClass("player") end
