@@ -138,125 +138,217 @@ function U.SetOpacity(value)
     for _, f in ipairs(U.panels) do paint(f) end
 end
 
+-- Tab navigation (UI-08): vertical tabs on the left side of the main window.
+-- Each tab shows/hides a group of elements without separate frames.
+U.TAB_ORDER = { "NOW", "ROUTE", "DATA" }
+U.tab = U.tab or "NOW"
+
+function U.ShowTab(name)
+    U.tab = name
+    if not U.frame then return end
+    local now = name == "NOW"
+    local route = name == "ROUTE"
+    local data = name == "DATA"
+    -- NOW tab: hero, upgrades, banner/context
+    if U.hero then U.hero:SetShown(now) end
+    if U.upgradeHeader then U.upgradeHeader:SetShown(now) end
+    for i = 1, 3 do
+        if U.upgradeSlots[i] then U.upgradeSlots[i]:SetShown(now) end
+        if U.upgradeDetails[i] then U.upgradeDetails[i]:SetShown(now) end
+    end
+    if U.banner then U.banner:SetShown(now) end
+    if U.context then U.context:SetShown(now) end
+    -- ROUTE tab: progress bar, card list, playstyle controls
+    if U.progress then U.progress:SetShown(route) end
+    if U.progressLabel then U.progressLabel:SetShown(route or data) end
+    if U.scroll then U.scroll:SetShown(route) end
+    if U.profile then U.profile:SetShown(route) end
+    if U.goal then U.goal:SetShown(route) end
+    -- DATA tab: session, CPU, footer
+    if U.sessionLine then U.sessionLine:SetShown(data) end
+    if U.cpuLine then U.cpuLine:SetShown(data) end
+    if U.footer then U.footer:SetShown(data) end
+    -- Tab button highlighting
+    if U.tabButtons then
+        for _, tabName in ipairs(U.TAB_ORDER) do
+            local btn = U.tabButtons[tabName]
+            if btn and btn.title then
+                local active = tabName == name
+                btn.title:SetTextColor(active and U.theme.accent[1] or U.theme.muted[1],
+                    active and U.theme.accent[2] or U.theme.muted[2],
+                    active and U.theme.accent[3] or U.theme.muted[3])
+            end
+        end
+    end
+    NS.Refresh()
+end
+
 function U.Create()
     if U.frame then return end
-    local f = panel(UIParent, "ForeverPathWindow", 740, 540)
+    local f = panel(UIParent, "ForeverPathWindow", 780, 560)
     U.frame = f
     f:SetFrameStrata("DIALOG")
-    f:SetScale(math.min(1, UIParent:GetWidth()/780, UIParent:GetHeight()/580))
+    f:SetScale(math.min(1, UIParent:GetWidth()/820, UIParent:GetHeight()/600))
     draggable(f, "position")
     U.Restore(f, "position", "CENTER")
     table.insert(UISpecialFrames, "ForeverPathWindow")
-    -- Modern separator: gradient accent (fades toward edges)
-    local stripe = f:CreateTexture(nil,"ARTWORK"); stripe:SetPoint("TOPLEFT",1,-1); stripe:SetSize(738,3)
+
+    -- Modern separator: gradient accent
+    local stripe = f:CreateTexture(nil,"ARTWORK"); stripe:SetPoint("TOPLEFT",1,-1); stripe:SetSize(778,3)
     stripe:SetColorTexture(U.theme.accentDim[1], U.theme.accentDim[2], U.theme.accentDim[3], 0.8)
     if stripe.SetGradientAlpha then
         pcall(stripe.SetGradientAlpha, stripe, "HORIZONTAL",
             U.theme.accent[1], U.theme.accent[2], U.theme.accent[3], 0.9,
             U.theme.accentDim[1], U.theme.accentDim[2], U.theme.accentDim[3], 0.0)
     end
-    label(f,"FOREVERPATH",22,24,-24,440)
-    U.subtitle = label(f,"Your next step, explained.",12,24,-54,500); U.subtitle:SetTextColor(unpack(muted))
-    button(f,"Setup",398,-20,90,function() U.Setup() end)
-    button(f,"Settings",494,-20,88,function() U.Settings() end)
-    button(f,"Diagnostics",588,-20,110,function() U.Diagnostics() end)
-    button(f,"X",704,-20,34,function() f:Hide() end)
-    U.banner = label(f,"",13,24,-88,690)
-    U.context = label(f,"",12,24,-111,690); U.context:SetTextColor(unpack(muted))
-    U.profile = button(f,"Choose profile",24,-138,230,function() NS.CycleProfile() end)
-    U.goal = button(f,"Playstyle: Balanced",266,-138,220,function() NS.CycleStyle() end)
-    button(f,"Compact",498,-138,106,function() U.ToggleCompact() end)
-    U.refresh = button(f,"Refresh",616,-138,100,function() NS.Refresh() end)
-    -- Route position: label + fill bar between the controls and the card list.
-    U.progressLabel = label(f,"",11,24,-170,664); U.progressLabel:SetTextColor(unpack(muted))
-    U.progress = CreateFrame("Frame",nil,f)
-    U.progress:SetPoint("TOPLEFT",24,-184); U.progress:SetSize(664,6)
+    label(f,"FOREVERPATH",20,60,-24,300)
+    button(f,"X",744,-20,30,function() f:Hide() end)
+
+    -- LEFT SIDEBAR: vertical tab navigation (ElvUI-inspired)
+    local SIDEBAR_X, SIDEBAR_W = 4, 44
+    f.tabs = {}
+    f.tabContent = {}
+    local TABS = {
+        { id = "now",       label = "NÅ",       icon = "◆" },
+        { id = "upgrades",  label = "GEAR",      icon = "⚡" },
+        { id = "route",     label = "RUTE",      icon = "▸" },
+        { id = "settings",  label = "SET",       icon = "⚙" },
+    }
+    for i, tab in ipairs(TABS) do
+        local b = button(f, tab.icon, SIDEBAR_X, -60 - (i - 1) * 52, SIDEBAR_W, function()
+            U.SetActiveTab(tab.id)
+        end, 44)
+        -- Tab label under icon
+        local tabLabel = label(f, tab.label, 9, SIDEBAR_X + 4, -60 - (i - 1) * 52 - 36, SIDEBAR_W - 4)
+        tabLabel:SetJustifyH("CENTER")
+        f.tabs[tab.id] = b
+        f.tabs[tab.id .. "_label"] = tabLabel
+    end
+    -- Sidebar separator (vertical gradient line)
+    local sidebarLine = f:CreateTexture(nil, "ARTWORK")
+    sidebarLine:SetPoint("TOPLEFT", SIDEBAR_X + SIDEBAR_W + 4, -50)
+    sidebarLine:SetWidth(1); sidebarLine:SetHeight(480)
+    sidebarLine:SetColorTexture(U.theme.border[1], U.theme.border[2], U.theme.border[3], 0.5)
+
+    -- CONTENT AREA: each tab gets a container frame, shown/hidden by SetActiveTab
+    local CONTENT_X = SIDEBAR_X + SIDEBAR_W + 16
+    local CONTENT_W = 780 - CONTENT_X - 20
+
+    -- "NOW" tab content: everything from the old layout
+    local now = CreateFrame("Frame", nil, f)
+    now:SetPoint("TOPLEFT", CONTENT_X, -50)
+    now:SetSize(CONTENT_W, 500)
+    f.tabContent.now = now
+
+    -- "UPGRADES" tab: full upgrade finder view
+    local upg = CreateFrame("Frame", nil, f)
+    upg:SetPoint("TOPLEFT", CONTENT_X, -50)
+    upg:SetSize(CONTENT_W, 500)
+    f.tabContent.upgrades = upg
+    label(upg, "UPGRADES AVAILABLE NOW", 16, 12, -12, CONTENT_W - 20):SetTextColor(unpack(U.theme.green))
+    upg.subtitle = label(upg, "Best quest reward per gear slot, for your class and level.", 11, 12, -36, CONTENT_W - 20)
+    upg.subtitle:SetTextColor(unpack(muted))
+
+    -- "ROUTE" tab: route management
+    local rte = CreateFrame("Frame", nil, f)
+    rte:SetPoint("TOPLEFT", CONTENT_X, -50)
+    rte:SetSize(CONTENT_W, 500)
+    f.tabContent.route = rte
+    label(rte, "YOUR ROUTE", 16, 12, -12, CONTENT_W - 20)
+    rte.subtitle = label(rte, "Import, share and manage your custom routes.", 11, 12, -36, CONTENT_W - 20)
+    rte.subtitle:SetTextColor(unpack(muted))
+
+    -- "SETTINGS" tab: settings content (existing elements will be re-parented)
+    local set = CreateFrame("Frame", nil, f)
+    set:SetPoint("TOPLEFT", CONTENT_X, -50)
+    set:SetSize(CONTENT_W, 500)
+    f.tabContent.settings = set
+
+    -- NOW tab: populate with existing UI elements (re-parented from f to now)
+    U.banner = label(now,"",13,0,-38,now:GetWidth())
+    U.context = label(now,"",12,0,-61,now:GetWidth()); U.context:SetTextColor(unpack(muted))
+    U.profile = button(now,"Profile",0,-88,110,function() NS.CycleProfile() end)
+    U.goal = button(now,"Playstyle: Balanced",116,-88,110,function() NS.CycleStyle() end)
+    button(now,"Compact",232,-88,90,function() U.ToggleCompact() end)
+    U.refresh = button(now,"Refresh",328,-88,90,function() NS.Refresh() end)
+    button(now,"Diag",424,-88,60,function() U.Diagnostics() end)
+
+    -- Route position
+    U.progressLabel = label(now,"",11,0,-120,now:GetWidth()); U.progressLabel:SetTextColor(unpack(muted))
+    U.progress = CreateFrame("Frame",nil,now)
+    U.progress:SetPoint("TOPLEFT",0,-134); U.progress:SetSize(now:GetWidth(),6)
     U.progress.background = U.progress:CreateTexture(nil,"BACKGROUND")
     U.progress.background:SetAllPoints(); U.progress.background:SetColorTexture(0.05,0.08,0.12,0.9)
     U.progress.fill = U.progress:CreateTexture(nil,"ARTWORK")
-    U.progress.fill:SetPoint("TOPLEFT"); U.progress.fill:SetHeight(6); U.progress.fill:SetTexture(unpack(accent))
+    U.progress.fill:SetPoint("TOPLEFT"); U.progress.fill:SetHeight(6)
+    U.progress.fill:SetColorTexture(unpack(accent))
     U.progress:Hide()
-    -- Hero (NAA-01): the one next step, big. Sits between the route progress and
-    -- the card list; U.Render fills it from the first "Do next" row (or rows[1]).
-    U.hero = panel(f, "ForeverPathHero", 664, 90, 0.8)
-    U.hero:SetPoint("TOPLEFT", 24, -198)
-    if U.hero.SetBackdropBorderColor then U.hero:SetBackdropBorderColor(accent[1], accent[2], accent[3], 0.9) end
-    U.hero.title = label(U.hero, "", 20, 16, -14, 524)
-    U.hero.reason = label(U.hero, "", 12, 16, -46, 524); U.hero.reason:SetTextColor(unpack(muted))
-    U.hero.way = button(U.hero, "Show way", 552, -12, 96, function() if U.hero.row then NS.Nav.Pin(U.hero.row) end end, 26)
-    U.hero.distance = label(U.hero, "", 12, 552, -46, 96); U.hero.distance:SetTextColor(unpack(accent))
+
+    -- Upgrade section
+    U.upgradeHeader = label(now,"UPGRADES AVAILABLE NOW",12,0,-148,now:GetWidth())
+    U.upgradeHeader:SetTextColor(unpack(U.theme.green))
+    U.upgradeSlots = {}
+    U.upgradeDetails = {}
+    for i = 1, 3 do
+        U.upgradeSlots[i] = label(now,"",12,0,-162 - (i - 1) * 16,80)
+        U.upgradeSlots[i]:SetTextColor(unpack(U.theme.green))
+        U.upgradeDetails[i] = label(now,"",12,94,-162 - (i - 1) * 16,now:GetWidth() - 100)
+    end
+    U.upgradeHeader:Hide()
+
+    -- Hero panel
+    U.hero = panel(now, "ForeverPathHero", now:GetWidth(), 78)
+    U.hero:SetPoint("TOPLEFT", 0, -218)
+    U.hero.title = label(U.hero, "", 15, 16, -8, now:GetWidth() - 130)
+    U.hero.reason = label(U.hero, "", 12, 16, -46, now:GetWidth() - 130); U.hero.reason:SetTextColor(unpack(muted))
+    U.hero.way = button(U.hero, "Show way", now:GetWidth() - 110, -12, 96, function() if U.hero.row then NS.Nav.Pin(U.hero.row) end end, 26)
+    U.hero.distance = label(U.hero, "", 12, now:GetWidth() - 110, -46, 96); U.hero.distance:SetTextColor(unpack(accent))
     local heroElapsed = 0
     U.hero:SetScript("OnUpdate", function(_, delta)
         heroElapsed = heroElapsed + (delta or 0)
         if heroElapsed >= 0.25 then heroElapsed = 0; U.UpdateHeroDistance() end
     end)
-    -- Modern hero glow: soft accent aura behind the panel
     if U.hero.CreateTexture then
         local heroGlow = U.hero:CreateTexture(nil, "BACKGROUND")
         heroGlow:SetAllPoints()
         heroGlow:SetColorTexture(U.theme.accentDim[1], U.theme.accentDim[2], U.theme.accentDim[3], 0.06)
     end
     U.hero:Hide()
-    -- Upgrade finder section (spor C): best available quest reward per slot.
-    U.upgradeHeader = label(f,"UPGRADES AVAILABLE NOW",12,24,-304,664)
-    U.upgradeHeader:SetTextColor(unpack(U.theme.green))
-    U.upgradeSlots = {}
-    U.upgradeDetails = {}
-    for i = 1, 3 do
-        U.upgradeSlots[i] = label(f,"",12,24,-318 - (i - 1) * 16,90)
-        U.upgradeSlots[i]:SetTextColor(unpack(U.theme.green))
-        U.upgradeDetails[i] = label(f,"",12,118,-318 - (i - 1) * 16,570)
-    end
-    U.upgradeHeader:Hide()
-    local scroll = CreateFrame("ScrollFrame",nil,f,"UIPanelScrollFrameTemplate")
-    scroll:SetPoint("TOPLEFT",24,-296); scroll:SetPoint("BOTTOMRIGHT",-40,40)
-    U.child = CreateFrame("Frame",nil,scroll); U.child:SetSize(664,1); scroll:SetScrollChild(U.child)
+
+    -- Card list (scroll)
+    local scroll = CreateFrame("ScrollFrame",nil,now,"UIPanelScrollFrameTemplate")
+    scroll:SetPoint("TOPLEFT",0,-310); scroll:SetPoint("BOTTOMRIGHT",-20,10)
+    U.child = CreateFrame("Frame",nil,scroll); U.child:SetSize(now:GetWidth() - 20,1); scroll:SetScrollChild(U.child)
     U.scroll, U.cards = scroll, {}
-    local meta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
-    local version = meta and meta("ForeverPath", "Version") or ""
-    U.footer = label(f,"ForeverPath " .. tostring(version or "") .. " | /fp help | Route: RestedXP | Quests: AllTheThings",11,24,-502,690)
-    U.footer:SetTextColor(unpack(muted))
-    U.sessionLine = label(f,"",11,24,-516,690)
-    U.sessionLine:SetTextColor(unpack(U.theme.green))
-    U.cpuLine = label(f,"",11,24,-530,690)
-    U.cpuLine:SetTextColor(unpack(muted))
+
+    -- Footer
+    U.footer = label(f,"",11,60,-534,680); U.footer:SetTextColor(unpack(muted))
+    U.sessionLine = label(f,"",11,60,-548,680); U.sessionLine:SetTextColor(unpack(U.theme.green))
+    U.cpuLine = label(f,"",11,60,-562,680); U.cpuLine:SetTextColor(unpack(muted))
+
+    -- Default to "now" tab
+    U.SetActiveTab(NS.settings.activeTab or "now")
     f:Hide()
 end
 
-local function card(index)
-    if U.cards[index] then return U.cards[index] end
-    local f = panel(U.child,nil,664,110,0.7)
-    -- Verdict-colored stripe (UX-05): the same cue the compact card has, so every
-    -- card's state reads in miniature before any text. A plain texture: no scripts,
-    -- no animate() (textures do not support OnUpdate, #177/BUG-02).
-    f.stripe = f:CreateTexture(nil,"ARTWORK")
-    f.stripe:SetSize(3,110); f.stripe:SetPoint("TOPLEFT",0,0)
-    f.stripe:SetColorTexture(unpack(accent))
-    f.icon = f:CreateTexture(nil,"ARTWORK")
-    f.icon:SetSize(34,34); f.icon:SetPoint("TOPLEFT",12,-10)
-    f.icon:SetTexCoord(0.08,0.92,0.08,0.92); f.icon:Hide()
-    f.title = label(f,"",15,56,-14,400)
-    f.badge = label(f,"",11,460,-16,190); f.badge:SetJustifyH("RIGHT")
-    f.body = label(f,"",12,56,-42,480); f.body:SetJustifyV("TOP")
-    f.way = button(f,"Show way",548,-38,100,function() if f.row then NS.Nav.Pin(f.row) end end, 24)
-    f:EnableMouse(true)
-    f:SetScript("OnEnter",function(self)
-        if self.SetBackdropBorderColor then self:SetBackdropBorderColor(accent[1], accent[2], accent[3], 0.9) end
-        if self.link and GameTooltip then GameTooltip:SetOwner(self,"ANCHOR_RIGHT"); GameTooltip:SetHyperlink(self.link); GameTooltip:Show() end
-    end)
-    f:SetScript("OnLeave",function(self)
-        if self.SetBackdropBorderColor then self:SetBackdropBorderColor(border[1], border[2], border[3], 0.9) end
-        if GameTooltip then GameTooltip:Hide() end
-    end)
-    -- Clicking a card asks "says who?": the provenance popover (spor B).
-    f:SetScript("OnMouseUp",function(self) if self.row then U.Provenance(self.row, self) end end)
-    U.cards[index] = f
-    return f
+function U.SetActiveTab(id)
+    if not U.frame or not U.frame.tabContent then return end
+    NS.settings.activeTab = id
+    for tabId, content in pairs(U.frame.tabContent) do
+        if tabId == id then content:Show() else content:Hide() end
+    end
+    for tabId, btn in pairs(U.frame.tabs) do
+        if type(btn) == "table" and btn.title then -- it's a button, not a label
+            local active = tabId == id
+            local color = active and U.theme.accent or U.theme.muted
+            btn.title:SetTextColor(color[1], color[2], color[3])
+        end
+    end
 end
 
--- Pure: one readable line per provenance record. No records means the row was read
--- live from the game client, which is its own kind of source.
+
 local SOURCE_NAMES = { ATT = "AllTheThings", RXPGuides = "RestedXP Guides" }
+
 function U.ProvenanceLines(row)
     local lines = {}
     local records = type(row) == "table" and row.provenance
@@ -404,6 +496,35 @@ local function renderUpgrades(state)
         end
     end
     U.scroll:ClearAllPoints(); U.scroll:SetPoint("TOPLEFT",24,-372)
+end
+
+
+-- Card factory: each quest/recommendation row in the scroll list.
+local function card(index)
+    if U.cards[index] then return U.cards[index] end
+    local f = panel(U.child,nil,664,110,0.7)
+    f.stripe = f:CreateTexture(nil,"ARTWORK")
+    f.stripe:SetSize(3,110); f.stripe:SetPoint("TOPLEFT",0,0)
+    f.stripe:SetColorTexture(unpack(U.theme.accent))
+    f.icon = f:CreateTexture(nil,"ARTWORK")
+    f.icon:SetSize(34,34); f.icon:SetPoint("TOPLEFT",12,-10)
+    f.icon:SetTexCoord(0.08,0.92,0.08,0.92); f.icon:Hide()
+    f.title = label(f,"",15,54,-14,400)
+    f.badge = label(f,"",11,460,-16,190); f.badge:SetJustifyH("RIGHT")
+    f.body = label(f,"",12,56,-42,480); f.body:SetJustifyV("TOP")
+    f.way = button(f,"Show way",548,-38,100,function() if f.row then NS.Nav.Pin(f.row) end end, 24)
+    f:EnableMouse(true)
+    f:SetScript("OnEnter",function(self)
+        if self.SetBackdropBorderColor then self:SetBackdropBorderColor(accent[1], accent[2], accent[3], 0.9) end
+        if self.link and GameTooltip then GameTooltip:SetOwner(self,"ANCHOR_RIGHT"); GameTooltip:SetHyperlink(self.link); GameTooltip:Show() end
+    end)
+    f:SetScript("OnLeave",function(self)
+        if self.SetBackdropBorderColor then self:SetBackdropBorderColor(border[1], border[2], border[3], 0.4) end
+        if GameTooltip then GameTooltip:Hide() end
+    end)
+    f:SetScript("OnMouseUp",function(self) if self.row then U.Provenance(self.row, self) end end)
+    U.cards[index] = f
+    return f
 end
 
 function U.Render(state)
