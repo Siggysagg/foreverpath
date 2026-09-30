@@ -103,14 +103,36 @@ function N.Update()
     local ok, facing = pcall(GetPlayerFacing)
     local angle, distance = N.Bearing(px, py, tx, ty, ok and facing or 0)
     local text = N.FormatDistance(distance)
-    if text == "You are there" then
+    local isArrived = text == "You are there"
+    if isArrived then
         f.arrow:Hide()
+        if not N.arrived then
+            N.arrived = true
+            if f.SetBackdropBorderColor then
+                f:SetBackdropBorderColor(0.37, 0.84, 0.55, 0.9)
+                if C_Timer and C_Timer.After then
+                    C_Timer.After(1.0, function()
+                        if f and f.SetBackdropBorderColor and N.arrived then
+                            f:SetBackdropBorderColor(0.37, 0.84, 0.55, 0.4)
+                        end
+                    end)
+                end
+            end
+        end
     else
         f.arrow:Show()
         f.arrow:SetRotation(angle)
+        if N.arrived then
+            N.arrived = false
+            if f.SetBackdropBorderColor then
+                f:SetBackdropBorderColor(0.12, 0.18, 0.26, 0.4)
+            end
+        end
     end
     f.text:SetText(title .. "\n" .. text)
 end
+
+N.arrived = false
 
 -- Yards to the current target as display text for non-arrow UI, or nil when there
 -- is no target or the map APIs or the target's continent are unknown. Reuses the
