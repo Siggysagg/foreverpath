@@ -1,7 +1,7 @@
 # ForeverPath
 
 <!-- foreverpath:download -->
-## ⬇️ Download — v0.7.6
+## ⬇️ Download — v0.7.7
 
 - **Direct download:** [ForeverPath.zip](https://github.com/Siggysagg/foreverpath/releases/latest/download/ForeverPath.zip) — unzip and copy the `ForeverPath` folder into `Interface/AddOns`.
 - **WowUp (auto-updates):** Get Addons → **Install from URL** → `https://github.com/Siggysagg/foreverpath`
@@ -14,7 +14,7 @@ ForeverPath tells you what to do next while you level — and explains why. It f
 your route, compares quest rewards against your equipped gear, and updates its
 recommendations as your character changes. Everything runs locally inside the game.
 
-> **Status:** `v0.7.6` — early testing release for WoW Forever.
+> **Status:** `v0.7.7` — early testing release for WoW Forever.
 
 ## What it does
 
