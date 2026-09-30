@@ -171,8 +171,12 @@ function U.Create()
     U.scroll, U.cards = scroll, {}
     local meta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
     local version = meta and meta("ForeverPath", "Version") or ""
-    U.footer = label(f,"ForeverPath " .. tostring(version or "") .. " | /fp help | Route: RestedXP | Quests: AllTheThings",11,24,-514,690)
+    U.footer = label(f,"ForeverPath " .. tostring(version or "") .. " | /fp help | Route: RestedXP | Quests: AllTheThings",11,24,-502,690)
     U.footer:SetTextColor(unpack(muted))
+    U.sessionLine = label(f,"",11,24,-516,690)
+    U.sessionLine:SetTextColor(unpack(U.theme.green))
+    U.cpuLine = label(f,"",11,24,-530,690)
+    U.cpuLine:SetTextColor(unpack(muted))
     f:Hide()
 end
 
@@ -436,6 +440,18 @@ function U.Render(state)
     local offset = U.scroll:GetVerticalScroll()
     U.scroll:SetVerticalScroll(math.min(offset,math.max(0,U.child:GetHeight()-U.scroll:GetHeight())))
     renderCompact(rows, state)
+    if U.sessionLine then
+        local stats = NS.Engine.SessionStats(NS.Client.session, GetTime and GetTime() or 0)
+        local text = string.format("Session: %d XP/h | %d quest(s) done", stats.xph or 0, stats.quests or 0)
+        if stats.toLevelText then text = text .. " | " .. stats.toLevelText .. " to level" end
+        if U.sessionLine.lastText ~= text then U.sessionLine:SetText(text); U.sessionLine.lastText = text end
+    end
+    if U.cpuLine then
+        -- Throttled inside C.CPUTime; on refresh ticks only (never per frame).
+        local seconds, note = NS.Client.CPUTime()
+        local text = seconds and string.format("CPU: %.2fs since load", seconds) or ("CPU: " .. tostring(note or "unknown"))
+        if U.cpuLine.lastText ~= text then U.cpuLine:SetText(text); U.cpuLine.lastText = text end
+    end
 end
 
 function U.Toggle()
@@ -524,7 +540,11 @@ function U.RouteImport()
         f.status = label(f, "", 12, 18, -384, 620); f.status:SetTextColor(unpack(U.theme.green))
         f.exampleBtn = button(f, "Insert example", 18, -404, 150, function() f.edit:SetText(U.RouteExample()) end)
         f.importBtn = button(f, "Import", 176, -404, 120, function() NS.ImportRoute(f.edit:GetText()) end)
-        f.removeBtn = button(f, "Remove", 304, -404, 120, function() NS.ImportRoute(nil); f.edit:SetText("") end)
+        f.shareBtn = button(f, "Copy share string", 304, -404, 150, function()
+            local shared = NS.Route.EncodeRoute()
+            f.edit:SetText(shared or "No custom route to share yet - import one first")
+        end)
+        f.removeBtn = button(f, "Remove", 462, -404, 120, function() NS.ImportRoute(nil); f.edit:SetText("") end)
     end
     U.routeWin.edit:SetText(NS.settings.customRouteText or "")
     fadeIn(U.routeWin)

@@ -102,6 +102,7 @@ events:SetScript("OnEvent",function(_,event,arg1)
         if arg1 ~= addonName then return end
         ForeverPathDB = type(ForeverPathDB) == "table" and ForeverPathDB or {}
         NS.settings = ForeverPathDB
+        pcall(NS.MigrateSettings, NS.settings)
         if not NS.Engine.profiles[NS.settings.profile] then NS.settings.profile = nil end
         if not NS.Route.styles[NS.settings.style] then NS.settings.style = "balanced" end
         NS.settings.goal = nil
@@ -136,6 +137,20 @@ events:SetScript("OnEvent",function(_,event,arg1)
     end
     NS.QueueRefresh()
 end)
+-- Save-format versioning (spor G): every older SavedVariables blob becomes version 1
+-- on load; future breaking changes run ordered migration steps from here. Idempotent
+-- and guarded — a failed migration never blocks loading.
+NS.SETTINGS_VERSION = 1
+
+function NS.MigrateSettings(settings)
+    if type(settings) ~= "table" then return settings end
+    local version = tonumber(settings.version) or 0
+    -- Migration steps run in order; each bumps the stored version. None yet (v1 is current).
+    -- if version < 1 then ... ; settings.version = 1 ; version = 1 end
+    settings.version = NS.SETTINGS_VERSION
+    return settings
+end
+
 function NS.ImportRoute(text)
     text = type(text) == "string" and #text > 0 and text or nil
     NS.settings.customRouteText = text
@@ -164,6 +179,11 @@ SlashCmdList.FOREVERPATH = function(input)
     elseif command == "setup" then NS.UI.Setup()
     elseif command == "settings" then NS.UI.Settings()
     elseif command == "route" then NS.UI.RouteImport()
+    elseif command == "stats" then
+        local s = NS.Client.session or {}
+        local stats = NS.Engine.SessionStats(s, GetTime and GetTime() or 0)
+        message(string.format("This session: %d XP/h, %d quest(s) done%s",
+            stats.xph or 0, stats.quests or 0, stats.toLevelText and (", " .. stats.toLevelText .. " to level") or ""))
     elseif command == "opacity" then
         local percent = tonumber(argument)
         if percent and percent >= 30 and percent <= 100 then NS.UI.SetOpacity(percent / 100); message("Opacity: " .. percent .. "%")
@@ -179,6 +199,6 @@ SlashCmdList.FOREVERPATH = function(input)
         if NS.SetStyle(argument) then message("Playstyle: " .. NS.Route.labels[argument]) else message("Playstyle must be speed, balanced, gear, story or dungeon.") end
     elseif command == "spec" then
         if NS.SetSpec(argument) then message("Spec: " .. argument) else message("Spec must not be empty.") end
-    elseif command == "help" then message("/fp | setup | settings | route | diag | compact | arrow | opacity <30-100> | reset | style <speed|balanced|gear|story|dungeon> | spec <name>. Scores omit effects and set bonuses; ambiguous one-hand weapons need manual comparison.")
+    elseif command == "help" then message("/fp | setup | settings | route | stats | diag | compact | arrow | opacity <30-100> | reset | style <speed|balanced|gear|story|dungeon> | spec <name>. Scores omit effects and set bonuses; ambiguous one-hand weapons need manual comparison.")
     else NS.UI.Toggle() end
 end

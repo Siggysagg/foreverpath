@@ -304,3 +304,51 @@ function E.BestUpgrades(available, player, profile, limit)
     while #out > limit do table.remove(out) end
     return out
 end
+
+-- Session stats (STATS-01): pure arithmetic over observed session data. Estimates
+-- are deliberately coarse ("~40 min at this pace") — the house rule forbids
+-- minute-precision promises the data cannot support.
+function E.SessionStats(session, now)
+    local out = { xph = 0, quests = 0, toLevel = nil, toLevelText = nil }
+    if type(session) ~= "table" then return out end
+    out.quests = session.questsDone or 0
+    local elapsed = (tonumber(now) or 0) - (tonumber(session.start) or 0)
+    local gained = tonumber(session.xpGained) or 0
+    if elapsed > 60 and gained > 0 then
+        out.xph = math.floor(gained / (elapsed / 3600) + 0.5)
+    end
+    local remaining = tonumber(session.xpToLevel)
+    if remaining and remaining > 0 and out.xph > 0 then
+        local minutes = math.ceil(remaining / out.xph * 60)
+        out.toLevel = minutes
+        out.toLevelText = string.format("~%d min at this pace", minutes)
+    end
+    return out
+end
+
+-- Travel intelligence (TRAVEL-01): pure functions over the imported Travel data.
+-- World units are yards; graveyards are grouped per continent in world coordinates.
+function E.NearestGraveyard(graveyards, continent, wx, wy)
+    -- Generated data keys are strings; continent arrives as a number from C_Map.
+    local list = type(graveyards) == "table" and (graveyards[continent] or graveyards[tostring(continent)])
+    if type(list) ~= "table" or type(wx) ~= "number" or type(wy) ~= "number" then return nil end
+    local best, bestDistance
+    for _, gy in ipairs(list) do
+        local dx, dy = gy.wx - wx, gy.wy - wy
+        local distance = math.sqrt(dx * dx + dy * dy)
+        if not bestDistance or distance < bestDistance then
+            best, bestDistance = { name = gy.name, distance = math.floor(distance + 0.5) }, distance
+        end
+    end
+    return best
+end
+
+-- Direct flight time between two taxi nodes in seconds, or nil when not connected.
+function E.FlightTime(flights, faction, fromNode, toNode)
+    local nodes = type(flights) == "table" and flights[faction]
+    local from = nodes and (nodes[fromNode] or nodes[tostring(fromNode)])
+    local routes = from and from.routes
+    local seconds = routes and (routes[toNode] or routes[tostring(toNode)])
+    if type(seconds) == "number" then return seconds end
+    return nil
+end

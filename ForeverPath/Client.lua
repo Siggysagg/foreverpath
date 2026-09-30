@@ -77,6 +77,72 @@ function C.ReadItem(link)
     end
     return { name = name, location = location, texture = texture, stats = stats, link = link }
 end
+-- Item slot lookup cache (PERF-02): GetItemInfoInstant per reward per refresh was the
+-- last big per-refresh API cost. Known mappings and genuinely slotless items are
+-- cached for the session; items the client has not loaded yet (no equipLoc) are left
+-- uncached so they are re-probed when the client learns them.
+C.itemSlotCache = {}
+
+function C.ItemSlotInfo(itemID, instant)
+    if not itemID then return nil end
+    local cached = C.itemSlotCache[itemID]
+    if cached ~= nil then return cached or nil end
+    local _, _, _, equipLoc = call(instant, itemID)
+    if equipLoc == nil then return nil end   -- not loaded yet: probe again next refresh
+    local targets = slots[equipLoc]
+    local info
+    if targets then
+        local keys = {}
+        for _, target in ipairs(targets) do keys[#keys + 1] = target.key end
+        info = { slots = keys, replaces = targets.replaces }
+    end
+    C.itemSlotCache[itemID] = info or false  -- false = real item, no slot we track
+    return info
+end
+
+-- Script CPU time for this addon since load, or nil when the client's script
+-- profiling is off (Classic-era: /console scriptProfile 1, then reload). Throttled
+-- by callers - never called per frame. PERF-03.
+local cpuCheckedAt, cpuAvailable, cpuMissing = 0, nil, false
+
+function C.CPUTime()
+    -- The profiling APIs can appear after /console scriptProfile 1 + reload, so the
+    -- globals are checked on every call (a table lookup, negligible when throttled).
+    if not (UpdateAddOnCPUUsage and GetAddOnCPUUsage) then return nil, "profiling APIs unavailable" end
+    local now = GetTime and GetTime() or 0
+    if cpuAvailable == nil or now - cpuCheckedAt >= 10 then
+        cpuCheckedAt = now
+        local ok = pcall(UpdateAddOnCPUUsage)
+        cpuAvailable = ok
+    end
+    if cpuAvailable == false then return nil, "profiling off: /console scriptProfile 1 then reload" end
+    local okTime, seconds = pcall(GetAddOnCPUUsage, "ForeverPath")
+    if not okTime or type(seconds) ~= "number" then return nil, "profiling off: /console scriptProfile 1 then reload" end
+    return seconds
+end
+
+-- Session stats (STATS-01): XP gained, quests completed and session time. Per-session
+-- only (never persisted); a level-up rebases the XP baseline so "gained" stays true.
+C.session = { start = nil, xpGained = 0, xpBaseline = nil, level = nil, questsDone = 0, questsAtStart = nil }
+
+function C.TrackSession(state)
+    local xpNow = call(UnitXP, "player")
+    if type(xpNow) ~= "number" then return end
+    local xpMax = call(UnitXPMax, "player")
+    local level = state.level
+    if C.session.level ~= level then
+        C.session.start = GetTime and GetTime() or 0
+        C.session.xpBaseline = xpNow
+        C.session.level = level
+    end
+    C.session.xpGained = math.max(0, xpNow - (C.session.xpBaseline or xpNow))
+    C.session.xpToLevel = (type(xpMax) == "number" and xpMax > xpNow) and (xpMax - xpNow) or nil
+    local completed = 0
+    for _ in pairs(C.questState and C.questState.completed or {}) do completed = completed + 1 end
+    if C.session.questsAtStart == nil then C.session.questsAtStart = completed end
+    C.session.questsDone = math.max(0, completed - C.session.questsAtStart)
+end
+
 function C.Snapshot()
     local version, build, _, interface = call(GetBuildInfo)
     local _, class = call(UnitClass, "player")
@@ -95,7 +161,11 @@ function C.Snapshot()
     local profile = NS.Engine.ProfileFor(state.class, state.level, NS.settings.spec, NS.settings.profile)
     state.profileLabel = profile and (profile.title or profile.label or profile.spec) or nil
     C.profileLabel = state.profileLabel
-    if not NS.dialogOpen then return C.NextQuests(state, profile) end
+    if not NS.dialogOpen then
+        local state2 = C.NextQuests(state, profile)
+        C.TrackSession(state2)
+        return state2
+    end
     if not GetQuestItemLink or not GetInventoryItemLink or not GetInventoryItemID then
         state.message = "Required item APIs unavailable. Open Diagnostics."; return state
     end
@@ -300,13 +370,8 @@ function C.NextQuests(state, profile)
         if questID then
             for _, reward in ipairs(node.rewards or {}) do
                 if reward.itemID and player.itemSlots[reward.itemID] == nil then
-                    local _, _, _, equipLoc = call(instant, reward.itemID)
-                    local targets = slots[equipLoc]
-                    if targets then
-                        local keys = {}
-                        for _, target in ipairs(targets) do keys[#keys + 1] = target.key end
-                        player.itemSlots[reward.itemID] = { slots = keys, replaces = targets.replaces }
-                    end
+                    local info = C.ItemSlotInfo(reward.itemID, instant)
+                    if info then player.itemSlots[reward.itemID] = info end
                 end
             end
         end
@@ -358,6 +423,24 @@ function C.NextQuests(state, profile)
     return state
 end
 
+-- Player world position (continent, wx, wy) for travel calculations; nil when the
+-- map APIs are unavailable. Same guarded pattern as Nav's playerWorld.
+function C.PlayerWorld()
+    if not (C_Map and C_Map.GetBestMapForUnit and C_Map.GetPlayerMapPosition
+        and C_Map.GetWorldPosFromMapPos and CreateVector2D) then return nil end
+    local okMap, map = pcall(C_Map.GetBestMapForUnit, "player")
+    if not okMap or not map then return nil end
+    local okPos, pos = pcall(C_Map.GetPlayerMapPosition, map, "player")
+    if not okPos or type(pos) ~= "table" then return nil end
+    local x, y = pos.x, pos.y
+    if pos.GetXY then x, y = pos:GetXY() end
+    local okWorld, continent, world = pcall(C_Map.GetWorldPosFromMapPos, map, CreateVector2D(x, y))
+    if not okWorld or type(world) ~= "table" then return nil end
+    local wx, wy = world.x, world.y
+    if world.GetXY then wx, wy = world:GetXY() end
+    return continent, wx, wy
+end
+
 function C.Diagnostics()
     local version, build, _, interface = call(GetBuildInfo)
     local meta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
@@ -382,6 +465,42 @@ function C.Diagnostics()
     lines[#lines+1] = string.format("Quest state cache: %d full scan(s) this session, %d flagged + %d log-index calls, %d log read(s) since load",
         C.stats.fullScans, C.stats.flagged, C.stats.logIndex, C.stats.logReads)
     if NS.UI and NS.UI.CompactDiagnostics then lines[#lines+1] = NS.UI.CompactDiagnostics() end
+    -- Session and custom-route state: the numbers a "slow"/"route broken" report needs.
+    local okSession, sessionLine = pcall(function()
+        local stats = NS.Engine.SessionStats(C.session, GetTime and GetTime() or 0)
+        if not C.session or C.session.start == nil then return "Session: not started" end
+        return string.format("Session: %d XP gained, %d quest(s), %d XP/h",
+            C.session.xpGained or 0, stats.quests or 0, stats.xph or 0)
+    end)
+    lines[#lines+1] = okSession and sessionLine or "Session: unknown"
+    local okRoute, routeLine = pcall(function()
+        local guides = NS.Route.customGuides
+        if type(guides) ~= "table" or #guides == 0 then return "Custom route: none" end
+        local steps = 0
+        for _, guide in ipairs(guides) do steps = steps + #guide.steps end
+        return string.format("Custom route: %d guide(s), %d step(s), style %s",
+            #guides, steps, tostring(NS.settings.style or "balanced"))
+    end)
+    lines[#lines+1] = okRoute and routeLine or "Custom route: unknown"
+    local travel = NS.Travel
+    if type(travel) == "table" and type(travel.graveyards) == "table" then
+        local continent, wx, wy = C.PlayerWorld()
+        local nearest = continent and NS.Engine.NearestGraveyard(travel.graveyards, continent, wx, wy)
+        local gyLine = nearest
+            and string.format("Travel: nearest graveyard %s (%d yd)", nearest.name or "?", nearest.distance or 0)
+            or "Travel: graveyard data loaded (position unknown)"
+        local faction = call(UnitFactionGroup, "player")
+        local nodes = travel.flights and travel.flights[faction]
+        if type(nodes) == "table" then
+            local count = 0
+            for _ in pairs(nodes) do count = count + 1 end
+            gyLine = gyLine .. " | flight network: " .. count .. " nodes"
+        end
+        lines[#lines+1] = gyLine
+    end
+    local seconds, cpuNote = C.CPUTime()
+    lines[#lines+1] = seconds and string.format("CPU: %.2fs script time since load", seconds)
+        or ("CPU: " .. tostring(cpuNote or "unknown"))
     lines[#lines+1] = "No player name, realm or account ID collected. Review error text before sharing."
     return table.concat(lines, "\n")
 end

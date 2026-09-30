@@ -300,7 +300,12 @@ end
 -- Store and activate the player's pasted route; custom guides win over imported
 -- guides with the same name, so "my launch route" always beats the shipped one.
 function R.SetCustomRoute(text)
-    R.customGuides, R.customTitles = R.ParseCustomGuides(text)
+    if type(text) == "string" and string.sub(text, 1, 4) == "FP1@" then
+        -- A share string: decode it instead of parsing guide text.
+        R.customGuides, R.customTitles = R.DecodeRoute(text) or {}, {}
+    else
+        R.customGuides, R.customTitles = R.ParseCustomGuides(text)
+    end
     R.customActive = #R.customGuides > 0
     return R.customGuides, R.customTitles
 end
@@ -331,4 +336,104 @@ function R.ActiveRoutes()
     end
     for id, title in pairs(R.customTitles or {}) do merged.titles[id] = title end
     return merged
+end
+
+-- Route sharing (SHARE-01): pack the parsed custom guides into one pasteable ASCII
+-- string and back. Format: FP1@guide@guide, guide = fields;fields|step|step,
+-- step = a;q;level;only;map;x;y;npc. Text fields escape the separators.
+local SHARE_PREFIX = "FP1@"
+
+local function shareEscape(text)
+    text = string.gsub(tostring(text or ""), "\\", "\\\\")
+    text = string.gsub(text, "@", "\\A")
+    text = string.gsub(text, ";", "\\S")
+    text = string.gsub(text, "|", "\\P")
+    text = string.gsub(text, ",", "\\C")
+    return text
+end
+
+local function shareUnescape(text)
+    text = string.gsub(text, "\\A", "@")
+    text = string.gsub(text, "\\S", ";")
+    text = string.gsub(text, "\\P", "|")
+    text = string.gsub(text, "\\C", ",")
+    text = string.gsub(text, "\\\\", "\\")
+    return text
+end
+
+local function numberOrEmpty(value)
+    if type(value) == "number" then return string.format("%.3f", value):gsub("0+$", ""):gsub("%.$", "") end
+    return ""
+end
+
+function R.EncodeRoute(guides)
+    guides = guides or R.customGuides
+    if type(guides) ~= "table" then return nil end
+    local parts = {}
+    for _, guide in ipairs(guides) do
+        local nexts = {}
+        for _, link in ipairs(guide.next or {}) do nexts[#nexts + 1] = shareEscape(link.to) end
+        parts[#parts + 1] = table.concat({
+            shareEscape(guide.name), tostring(guide.minLevel or 1), tostring(guide.maxLevel or 60),
+            shareEscape(guide.only), shareEscape(guide.defaultfor), shareEscape(guide.group),
+            table.concat(nexts, ","),
+        }, ";")
+        for _, step in ipairs(guide.steps or {}) do
+            parts[#parts + 1] = "step:" .. table.concat({
+                tostring(step.a), tostring(step.q), tostring(step.level or ""),
+                shareEscape(step.only), tostring(step.map or ""),
+                numberOrEmpty(step.x), numberOrEmpty(step.y), shareEscape(step.npc),
+            }, ";")
+        end
+    end
+    if #parts == 0 then return nil end
+    return SHARE_PREFIX .. table.concat(parts, "|")
+end
+
+local STEP_FIELDS = { "a", "q", "level", "only", "map", "x", "y", "npc" }
+
+-- Split on ';' keeping empty fields (gmatch "[^;]+" would drop them and shift
+-- every later field whenever an optional one is absent).
+local function splitFields(part)
+    local fields = {}
+    for field in string.gmatch(part .. ";", "(.-);") do fields[#fields + 1] = field end
+    return fields
+end
+
+function R.DecodeRoute(text)
+    if type(text) ~= "string" or string.sub(text, 1, #SHARE_PREFIX) ~= SHARE_PREFIX then return nil end
+    local guides = {}
+    local current
+    for part in string.gmatch(string.sub(text, #SHARE_PREFIX + 1), "[^|]+") do
+        local fields = splitFields(part)
+        if string.sub(part, 1, 5) == "step:" and current then
+            local step = {}
+            -- fields[1] is "step:<action>"; the remaining fields follow STEP_FIELDS order.
+            step.a = string.sub(fields[1], 6)
+            for index, key in ipairs(STEP_FIELDS) do
+                if key ~= "a" then
+                    local value = fields[index]
+                    if value ~= nil and value ~= "" then
+                        if key == "q" or key == "level" or key == "map"
+                            or key == "x" or key == "y" then step[key] = tonumber(value)
+                        else step[key] = shareUnescape(value) end
+                    end
+                end
+            end
+            if step.a and step.q then current.steps[#current.steps + 1] = step end
+        else
+            current = { name = shareUnescape(fields[1] or ""), minLevel = tonumber(fields[2]) or 1,
+                maxLevel = tonumber(fields[3]) or 60, only = shareUnescape(fields[4] or ""),
+                defaultfor = shareUnescape(fields[5] or ""), group = shareUnescape(fields[6] or ""),
+                next = {}, steps = {} }
+            if current.only == "" then current.only = nil end
+            if current.defaultfor == "" then current.defaultfor = nil end
+            if current.group == "" then current.group = nil end
+            for to in string.gmatch(fields[7] or "", "[^,]+") do
+                current.next[#current.next + 1] = { to = shareUnescape(to) }
+            end
+            if current.name ~= "" then guides[#guides + 1] = current end
+        end
+    end
+    return guides
 end
