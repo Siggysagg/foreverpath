@@ -3,8 +3,17 @@ local U = {}
 NS.UI = U
 -- Design tokens: every color the UI renders comes from this one table (UPGRADE_PLAN spor D).
 U.theme = {
-    accent = {0.30, 0.72, 1.00}, muted = {0.64, 0.70, 0.78}, border = {0.18, 0.27, 0.38}, text = {0.90, 0.93, 0.98},
-    green = {0.37, 0.84, 0.55}, red = {0.88, 0.42, 0.42}, yellow = {0.93, 0.78, 0.36}, gray = {0.58, 0.63, 0.70},
+    -- Modern palette: deeper blue-tinted base, softer borders, richer accent
+    accent = {0.30, 0.72, 1.00},
+    accentDim = {0.15, 0.36, 0.50},   -- glow and separators
+    muted = {0.55, 0.61, 0.70},       -- slightly darker for better contrast
+    border = {0.12, 0.18, 0.26},      -- softer, less visible
+    borderAlpha = 0.4,                 -- was 0.9 — modern UIs use subtle edges
+    bg = {0.015, 0.025, 0.045},       -- deeper blue-black
+    bgCard = {0.04, 0.06, 0.09},      -- card-level, slightly lighter
+    text = {0.92, 0.95, 1.00},        -- brighter for contrast
+    textDim = {0.75, 0.80, 0.88},     -- secondary text
+    green = {0.37, 0.84, 0.55}, red = {0.88, 0.42, 0.42}, yellow = {0.93, 0.78, 0.36}, gray = {0.55, 0.60, 0.67},
 }
 -- Verdict colors: the green/red pair also differs in lightness so hue alone never carries the meaning.
 U.theme.verdict = {
@@ -24,7 +33,10 @@ U.panels = {}
 
 local function opacity() return tonumber(NS.settings and NS.settings.opacity) or 0.85 end
 local function paint(f)
-    if f.SetBackdropColor then f:SetBackdropColor(0.025, 0.035, 0.055, opacity() * (f.alphaScale or 1)) end
+    if f.SetBackdropColor then
+        local bg = f.alphaScale and f.alphaScale < 1 and U.theme.bgCard or U.theme.bg
+        f:SetBackdropColor(bg[1], bg[2], bg[3], opacity() * (f.alphaScale or 1))
+    end
 end
 -- alphaScale: cards and overlays sit lighter than the window they are in.
 local function panel(parent, name, width, height, alphaScale)
@@ -33,8 +45,15 @@ local function panel(parent, name, width, height, alphaScale)
     f.alphaScale = alphaScale
     if f.SetBackdrop then
         f:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
-        f:SetBackdropBorderColor(border[1], border[2], border[3], 0.9)
+        -- Modern: softer border (lower alpha), deeper background
+        f:SetBackdropBorderColor(U.theme.border[1], U.theme.border[2], U.theme.border[3], U.theme.borderAlpha or 0.4)
     end
+    -- Depth layer: subtle top-light gradient overlay for visual dimension
+    local gradient = f:CreateTexture(nil, "BACKGROUND")
+    gradient:SetPoint("TOPLEFT", 1, -1)
+    gradient:SetPoint("TOPRIGHT", -1, -1)
+    gradient:SetHeight(math.min(height * 0.3, 40))
+    gradient:SetColorTexture(U.theme.accentDim[1], U.theme.accentDim[2], U.theme.accentDim[3], 0.08)
     paint(f)
     U.panels[#U.panels + 1] = f
     return f
@@ -45,19 +64,25 @@ local function label(parent, text, size, x, y, width)
     f:SetPoint("TOPLEFT", x, y)
     f:SetWidth(width)
     f:SetJustifyH("LEFT")
-    f:SetTextColor(unpack(U.theme.text))
+    f:SetTextColor(unpack(size >= 14 and U.theme.text or U.theme.textDim))
     f:SetText(text)
     return f
 end
 local function button(parent, text, x, y, width, action, height)
     local b = CreateFrame("Button", nil, parent)
     b:SetSize(width, height or 28); b:SetPoint("TOPLEFT", x, y)
-    local bg = b:CreateTexture(nil, "BACKGROUND"); bg:SetAllPoints(); bg:SetColorTexture(0.09, 0.13, 0.17, 0.85)
+    local bg = b:CreateTexture(nil, "BACKGROUND"); bg:SetAllPoints()
+    bg:SetColorTexture(U.theme.bgCard[1], U.theme.bgCard[2], U.theme.bgCard[3], 0.85)
+    local glow = b:CreateTexture(nil, "BORDER"); glow:SetAllPoints()
+    glow:SetColorTexture(U.theme.accentDim[1], U.theme.accentDim[2], U.theme.accentDim[3], 0)
     local title = b:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     title:SetPoint("CENTER"); title:SetTextColor(unpack(accent)); title:SetText(text)
     b.title = title
-    b:SetScript("OnEnter", function() bg:SetColorTexture(0.13, 0.24, 0.30, 0.95) end)
-    b:SetScript("OnLeave", function() bg:SetColorTexture(0.09, 0.13, 0.17, 0.85) end)
+    -- Modern hover: soft accent glow instead of hard color swap
+    b:SetScript("OnEnter", function()
+        glow:SetColorTexture(U.theme.accentDim[1], U.theme.accentDim[2], U.theme.accentDim[3], 0.15)
+    end)
+    b:SetScript("OnLeave", function() glow:SetColorTexture(0, 0, 0, 0) end)
     b:SetScript("OnClick", action)
     return b
 end
@@ -122,7 +147,14 @@ function U.Create()
     draggable(f, "position")
     U.Restore(f, "position", "CENTER")
     table.insert(UISpecialFrames, "ForeverPathWindow")
-    local stripe = f:CreateTexture(nil,"ARTWORK"); stripe:SetPoint("TOPLEFT",1,-1); stripe:SetSize(738,3); stripe:SetColorTexture(unpack(accent))
+    -- Modern separator: gradient accent (fades toward edges)
+    local stripe = f:CreateTexture(nil,"ARTWORK"); stripe:SetPoint("TOPLEFT",1,-1); stripe:SetSize(738,3)
+    stripe:SetColorTexture(U.theme.accentDim[1], U.theme.accentDim[2], U.theme.accentDim[3], 0.8)
+    if stripe.SetGradientAlpha then
+        pcall(stripe.SetGradientAlpha, stripe, "HORIZONTAL",
+            U.theme.accent[1], U.theme.accent[2], U.theme.accent[3], 0.9,
+            U.theme.accentDim[1], U.theme.accentDim[2], U.theme.accentDim[3], 0.0)
+    end
     label(f,"FOREVERPATH",22,24,-24,440)
     U.subtitle = label(f,"Your next step, explained.",12,24,-54,500); U.subtitle:SetTextColor(unpack(muted))
     button(f,"Setup",398,-20,90,function() U.Setup() end)
@@ -158,6 +190,12 @@ function U.Create()
         heroElapsed = heroElapsed + (delta or 0)
         if heroElapsed >= 0.25 then heroElapsed = 0; U.UpdateHeroDistance() end
     end)
+    -- Modern hero glow: soft accent aura behind the panel
+    if U.hero.CreateTexture then
+        local heroGlow = U.hero:CreateTexture(nil, "BACKGROUND")
+        heroGlow:SetAllPoints()
+        heroGlow:SetColorTexture(U.theme.accentDim[1], U.theme.accentDim[2], U.theme.accentDim[3], 0.06)
+    end
     U.hero:Hide()
     -- Upgrade finder section (spor C): best available quest reward per slot.
     U.upgradeHeader = label(f,"UPGRADES AVAILABLE NOW",12,24,-304,664)
@@ -197,9 +235,9 @@ local function card(index)
     f.icon = f:CreateTexture(nil,"ARTWORK")
     f.icon:SetSize(34,34); f.icon:SetPoint("TOPLEFT",12,-10)
     f.icon:SetTexCoord(0.08,0.92,0.08,0.92); f.icon:Hide()
-    f.title = label(f,"",15,54,-12,400)
-    f.badge = label(f,"",11,458,-14,190); f.badge:SetJustifyH("RIGHT")
-    f.body = label(f,"",12,54,-38,480); f.body:SetJustifyV("TOP")
+    f.title = label(f,"",15,56,-14,400)
+    f.badge = label(f,"",11,460,-16,190); f.badge:SetJustifyH("RIGHT")
+    f.body = label(f,"",12,56,-42,480); f.body:SetJustifyV("TOP")
     f.way = button(f,"Show way",548,-38,100,function() if f.row then NS.Nav.Pin(f.row) end end, 24)
     f:EnableMouse(true)
     f:SetScript("OnEnter",function(self)
@@ -662,37 +700,85 @@ function U.SetupSanity()
     return string.format("Data loaded: %d guides, %d quests - ready", guideCount, questCount), true
 end
 
+-- 3-step onboarding wizard (UX-06): scale, playstyle, welcome. Each step
+-- reveals the next; Esc closes (setup reappears on next login until done).
 function U.Setup()
     if not U.setup then
-        local f = panel(UIParent,"ForeverPathSetup",480,470)
+        local f = panel(UIParent,"ForeverPathSetup",480,540)
         U.setup = f
         f:SetFrameStrata("FULLSCREEN_DIALOG"); f:SetPoint("CENTER")
         draggable(f, "setupPosition")
         table.insert(UISpecialFrames,"ForeverPathSetup")
-        label(f,"How do you want to play?",18,22,-20,420)
-        local hint = label(f,"You can change this any time with the Playstyle button or /fp style.",11,22,-46,436); hint:SetTextColor(unpack(muted))
+        f.step = 1
+
+        -- STEP indicator
+        f.stepLabel = label(f,"Step 1 of 3 — Scale",16,22,-16,300)
+        f.stepHint = label(f,"How big should the windows be? You can change this later with /fp settings.",11,22,-40,436)
+        f.stepHint:SetTextColor(unpack(muted))
+
+        -- STEP 1: Scale
+        f.scaleRow = {}
+        local scales = { {1.0,"100% — Normal"}, {0.8,"80% — Compact"}, {0.6,"60% — Small"} }
+        for i, entry in ipairs(scales) do
+            local value, text = entry[1], entry[2]
+            local b = button(f, text, 22, -64 - (i - 1) * 40, 436, function()
+                NS.settings.scale = value
+                if f.SetScale then f:SetScale(value) end
+                U.SetupStep(f, 2)
+            end, 32)
+            f.scaleRow[value] = b
+        end
+
+        -- STEP 2: Playstyle
+        f.styleHeader = label(f,"Step 2 of 3 — Playstyle",16,22,-16,300)
+        f.styleHint = label(f,"How do you want to level? You can change this any time.",11,22,-40,436)
+        f.styleHint:SetTextColor(unpack(muted))
         f.choices = {}
         for i, choice in ipairs(CHOICES) do
             local style = choice[1]
-            local b = button(f,"",22,-72 - (i - 1) * 68,436,function()
+            local b = button(f,"",22,-64 - (i - 1) * 58,436,function()
                 NS.SetStyle(style)
                 NS.settings.setupDone = true
-                f:Hide()
-                if NS.settings.compact ~= false then U.Compact(true) end
-                -- One-time reveal: the main window IS the "which quests first" answer.
-                U.Toggle()
-            end, 60)
-            b.title:ClearAllPoints(); b.title:SetPoint("TOPLEFT", 12, -10); b.title:SetText(choice[2])
-            local desc = label(b,choice[3],11,12,-30,412); desc:SetTextColor(unpack(muted))
+                U.SetupStep(f, 3)
+            end, 50)
+            b.title:ClearAllPoints(); b.title:SetPoint("TOPLEFT", 12, -8); b.title:SetText(choice[2])
+            local desc = label(b,choice[3],10,12,-26,412); desc:SetTextColor(unpack(muted))
             f.choices[style] = b
         end
-        f.cardHint = label(f,"The small card under your map follows your next step - click it for details.",11,22,-414,436)
-        f.cardHint:SetTextColor(unpack(muted))
-        f.sanity = label(f,"",12,22,-434,436)
+
+        -- STEP 3: Welcome / sanity
+        f.welcomeHeader = label(f,"You are all set!",18,22,-16,300)
+        f.welcomeText = label(f,"The small card under your map follows your next step.\nClick it for details, or type /fp for the full window.",12,22,-44,436)
+        f.welcomeText:SetTextColor(unpack(muted))
+        f.finishBtn = button(f,"Start playing",22,-100,436,function()
+            f:Hide()
+            if NS.settings.compact ~= false then U.Compact(true) end
+            U.Toggle()
+        end, 36)
+        f.sanity = label(f,"",12,22,-150,436)
+
+        U.SetupStep(f, 1)
     end
     local text, ok = U.SetupSanity()
     U.setup.sanity:SetText((ok and "|cff37d68c" or "|cffe08a3c") .. text .. "|r")
     fadeIn(U.setup)
+end
+
+function U.SetupStep(f, step)
+    f.step = step
+    local function show(element, visible)
+        if visible then element:Show() else element:Hide() end
+    end
+    show(f.stepLabel, step == 1)
+    show(f.stepHint, step == 1)
+    for _, b in pairs(f.scaleRow) do show(b, step == 1) end
+    show(f.styleHeader, step == 2)
+    show(f.styleHint, step == 2)
+    for _, b in pairs(f.choices) do show(b, step == 2) end
+    show(f.welcomeHeader, step == 3)
+    show(f.welcomeText, step == 3)
+    show(f.finishBtn, step == 3)
+    show(f.sanity, step == 3)
 end
 
 function U.Diagnostics()
@@ -716,6 +802,28 @@ end
 -- NS.SetStyle / NS.UI.SetOpacity functions as the slash commands (one source of truth).
 local STYLE_LABELS = { speed = "Speedrun", balanced = "Balanced", gear = "Gear first", story = "Story" }
 
+-- Pure: how far the Display section must move down when imported spec buttons are
+-- shown (BUG-05/#186). Spec buttons fill rows of four, 26px tall on a 32px pitch
+-- starting at y=-232; the Display label sits at y=-200, so with any specs present
+-- the whole Display block moves down by rows*32+42 - below the last spec row with
+-- 16px of air for every spec count. (A flat #specs*32+10 would still overlap for a
+-- single imported spec: 42px clears nothing below y=-242.)
+function U.SettingsDisplayOffset(specCount)
+    local n = tonumber(specCount) or 0
+    if n <= 0 then return 0 end
+    return math.ceil(n / 4) * 32 + 42
+end
+
+-- BUG-05 (#186): re-place every Display-section element at its base position minus
+-- the current offset, and grow the panel so the moved rows stay inside it.
+local function placeDisplayRows(f, offset)
+    for _, row in ipairs(f.displayRows) do
+        row[1]:ClearAllPoints()
+        row[1]:SetPoint("TOPLEFT", row[2], row[3] - offset)
+    end
+    f:SetHeight(f.baseHeight + offset)
+end
+
 function U.SyncSettings(f)
     for style, b in pairs(f.styles) do
         local color = NS.settings.style == style and U.theme.accent or U.theme.muted
@@ -738,6 +846,15 @@ function U.SyncSettings(f)
         end
     else
         f.specLabel:SetText("Spec (stat weights): no imported specs for your class")
+    end
+    -- BUG-05 (#186): spec buttons used to land on top of the Arrow/Animations row;
+    -- the whole Display block now moves below them (and back when specs disappear).
+    if f.displayRows then
+        local offset = U.SettingsDisplayOffset(#specs)
+        if offset ~= f.displayOffset then
+            f.displayOffset = offset
+            placeDisplayRows(f, offset)
+        end
     end
     local anySpec = #specs == 0 or string.lower(NS.settings.spec or "") == ""
     f.autoSpec.title:SetTextColor(anySpec and unpack(U.theme.accent) or unpack(U.theme.muted))
@@ -771,7 +888,7 @@ function U.Settings()
         f.autoSpec = button(f,"Automatic",22,-160,104,function()
             NS.settings.spec = nil; NS.Refresh(); U.SyncSettings(f)
         end, 26)
-        label(f,"Display",13,22,-200,240)
+        f.displayLabel = label(f,"Display",13,22,-200,240)
         f.arrow = button(f,"Arrow: on",22,-222,104,function()
             NS.settings.arrow = NS.settings.arrow == false
             NS.Refresh(); U.SyncSettings(f)
@@ -804,14 +921,26 @@ function U.Settings()
             NS.settings.tipThrottleSeconds = math.min(60, (tonumber(NS.settings.tipThrottleSeconds) or 10) + 5)
             U.SyncSettings(f)
         end, 26)
-        label(f,"Positions",13,22,-368,240)
+        f.positionsLabel = label(f,"Positions",13,22,-368,240)
         f.resetPositions = button(f,"Reset all window positions",22,-390,220,function()
             NS.ResetPositions(); U.SyncSettings(f)
         end, 26)
         local meta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
         local version = tostring(meta and meta("ForeverPath", "Version") or "")
-        local sources = label(f,"ForeverPath " .. version .. " | Route: RestedXP | Quests: AllTheThings",11,22,-444,436)
-        sources:SetTextColor(unpack(muted))
+        f.sources = label(f,"ForeverPath " .. version .. " | Route: RestedXP | Quests: AllTheThings",11,22,-444,436)
+        f.sources:SetTextColor(unpack(muted))
+        -- BUG-05 (#186): base positions of everything from the Display label down, so
+        -- SyncSettings can move the whole block under the spec buttons via their y.
+        f.displayRows = {
+            { f.displayLabel, 22, -200 }, { f.arrow, 22, -222 }, { f.compact, 134, -222 },
+            { f.animations, 22, -258 }, { f.opacityLabel, 22, -300 },
+            { f.opacityMinus, 150, -294 }, { f.opacityValue, 178, -300 }, { f.opacityPlus, 234, -294 },
+            { f.throttleLabel, 22, -336 }, { f.throttleMinus, 150, -330 },
+            { f.throttleValue, 178, -336 }, { f.throttlePlus, 234, -330 },
+            { f.positionsLabel, 22, -368 }, { f.resetPositions, 22, -390 },
+            { f.sources, 22, -444 },
+        }
+        f.baseHeight = 470
     end
     U.SyncSettings(U.settings)
     fadeIn(U.settings)
