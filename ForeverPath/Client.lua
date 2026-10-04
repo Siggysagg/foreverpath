@@ -256,7 +256,7 @@ local function loggedQuestIDs()
     local byIndex = api(C_QuestLog, "GetQuestIDForLogIndex")
     local logTitle = api(C_QuestLog, "GetQuestLogTitle")
     if type(byIndex) ~= "function" and type(logTitle) ~= "function" then return nil end
-    local _, count = call(C_QuestLog and C_QuestLog.GetNumQuestLogEntries or GetNumQuestLogEntries)
+    local count = call(C_QuestLog and C_QuestLog.GetNumQuestLogEntries or GetNumQuestLogEntries)
     local ids = {}
     for index = 1, tonumber(count) or 0 do
         local questID = tonumber(call(byIndex, index))
@@ -284,27 +284,33 @@ local function recheckQuest(state, questID, isDone, logIndex, isReady)
     end
 end
 
--- Brings the cache up to date before rows are planned. known maps imported quest IDs to true;
--- quests outside the database are ignored exactly like a full scan would ignore them.
+-- Track quest facts, route IDs and live quests. Newly imported route IDs are read
+-- once; ordinary refreshes still make no per-quest API calls.
 function C.SyncQuestState(known, isDone, logIndex, isReady)
     local state = C.questState
-    if not state.built then  -- Session build: today's logic, run once.
+    local initial = not state.built
+    if initial then
         C.stats.fullScans = C.stats.fullScans + 1
-        for questID in pairs(known) do
-            C.stats.flagged = C.stats.flagged + 1
-            if call(isDone, questID) then state.completed[questID] = true end
-            C.stats.logIndex = C.stats.logIndex + 1
-            local index = call(logIndex, questID)
-            if index and index ~= 0 then
-                state.inLog[questID] = true
-                if call(isReady, questID) then state.ready[questID] = true end
-            end
+        local merged = {}  -- never write into the caller's (cached) set
+        for questID in pairs(known) do merged[questID] = true end
+        for _, questID in ipairs(loggedQuestIDs() or {}) do merged[questID] = true end
+        known = merged
+        state.known = {}
+    end
+    state.known = state.known or {}
+    for questID in pairs(known) do
+        if not state.known[questID] then
+            recheckQuest(state, questID, isDone, logIndex, isReady)
+            state.known[questID] = true
         end
+    end
+    if initial then
         state.built, state.dirty, state.dirtyLog = true, nil, nil
         return
     end
     for questID in pairs(state.dirty or {}) do  -- QUEST_ACCEPTED/QUEST_TURNED_IN payloads
-        if known[questID] then recheckQuest(state, questID, isDone, logIndex, isReady) end
+        recheckQuest(state, questID, isDone, logIndex, isReady)
+        state.known[questID] = true
     end
     state.dirty = nil
     if not state.dirtyLog then return end
@@ -313,16 +319,14 @@ function C.SyncQuestState(known, isDone, logIndex, isReady)
     C.stats.logReads = C.stats.logReads + 1
     if ids then
         for _, questID in ipairs(ids) do
-            if known[questID] then
-                seen[questID] = true
-                state.inLog[questID] = true
-                state.ready[questID] = call(isReady, questID) and true or nil
-            end
+            seen[questID], state.known[questID] = true, true
+            state.inLog[questID] = true
+            state.ready[questID] = call(isReady, questID) and true or nil
         end
     else
         -- Client without log enumeration: probe imported quests like the build scan,
         -- but leave IsQuestFlaggedCompleted out of it.
-        for questID in pairs(known) do
+        for questID in pairs(state.known) do
             C.stats.logIndex = C.stats.logIndex + 1
             local index = call(logIndex, questID)
             if index and index ~= 0 then
@@ -343,14 +347,65 @@ function C.SyncQuestState(known, isDone, logIndex, isReady)
     end
 end
 
+-- Static indexes over NS.Quests, built once per NS.Quests table (tests replace it; the
+-- shipped data never changes in place). ponytail: in-place edits of a built table go unseen.
+function C.QuestIndex()
+    local quests = NS.Quests
+    local index = C.questIndex
+    if index and index.source == quests then return index end
+    index = { source = quests, data = {}, byQuestID = {}, known = {}, rewardItems = {} }
+    for zoneName, zone in pairs(quests or {}) do
+        for id, node in pairs(zone) do node.zone = node.zone or zoneName; index.data[id] = node end
+    end
+    local seen = {}
+    for _, node in pairs(index.data) do
+        local questID = node.questID
+        if questID then
+            index.known[questID], index.byQuestID[questID] = true, node
+            for _, reward in ipairs(node.rewards or {}) do
+                if reward.itemID and not seen[reward.itemID] then
+                    seen[reward.itemID] = true
+                    index.rewardItems[#index.rewardItems + 1] = reward.itemID
+                end
+            end
+        end
+    end
+    C.questIndex = index
+    return index
+end
+
 -- Live "what should I do now": imported quests filtered and ranked for this character.
+-- Pure: is the recommendation backed by confirmed data? nil = live/route data with no quest
+-- record (not imported, so not "estimated"); "verified" only when the quest record and the
+-- chosen reward are both verified; anything else (estimated or unknown) is "estimated".
+function C.EvidenceOf(node, reward)
+    if type(node) ~= "table" then return nil end
+    if node.evidence ~= "verified" then return "estimated" end
+    if type(reward) == "table" and reward.evidence ~= "verified" then return "estimated" end
+    return "verified"
+end
+
 function C.NextQuests(state, profile)
     state.mode = "next"
-    local data, known, byQuestID = {}, {}, {}
-    for zoneName, zone in pairs(NS.Quests or {}) do
-        for id, node in pairs(zone) do node.zone = node.zone or zoneName; data[id] = node end
+    local index = C.QuestIndex()
+    local data, byQuestID, known = index.data, index.byQuestID, index.known
+    local routes = NS.Route.ActiveRoutes()
+    -- Route step IDs change with custom routes, so they are checked per refresh. The cached
+    -- base set is shared; copy it only when a step ID is missing from it (SyncQuestState's
+    -- only mutation is adding logged quest IDs, which it already tracks in questState.known).
+    local extra
+    for _, guide in ipairs(routes and routes.guides or {}) do
+        for _, step in ipairs(guide.steps or {}) do
+            if not known[step.q] then
+                if not extra then
+                    extra = {}
+                    for questID in pairs(known) do extra[questID] = true end
+                end
+                extra[step.q] = true
+            end
+        end
     end
-    for _, node in pairs(data) do if node.questID then known[node.questID] = true; byQuestID[node.questID] = node end end
+    if extra then known = extra end
     local logIndex = api(C_QuestLog, "GetLogIndexForQuestID", "GetQuestLogIndexByID")
     local titleFor = api(C_QuestLog, "GetTitleForQuestID")
     local instant = api(C_Item, "GetItemInfoInstant")
@@ -366,15 +421,10 @@ function C.NextQuests(state, profile)
         local info = call(mapInfo, map)
         return type(info) == "table" and info.name or nil
     end
-    for _, node in pairs(data) do
-        local questID = node.questID
-        if questID then
-            for _, reward in ipairs(node.rewards or {}) do
-                if reward.itemID and player.itemSlots[reward.itemID] == nil then
-                    local info = C.ItemSlotInfo(reward.itemID, instant)
-                    if info then player.itemSlots[reward.itemID] = info end
-                end
-            end
+    for _, itemID in ipairs(index.rewardItems) do  -- unloaded items are re-probed every refresh
+        if player.itemSlots[itemID] == nil then
+            local info = C.ItemSlotInfo(itemID, instant)
+            if info then player.itemSlots[itemID] = info end
         end
     end
     for _, targets in pairs(slots) do
@@ -388,13 +438,14 @@ function C.NextQuests(state, profile)
             end
         end
     end
-    local rows = profile and NS.Route.Plan(data, NS.Route.ActiveRoutes(), player, profile, NS.settings.style) or {}
+    local rows = profile and NS.Route.Plan(data, routes, player, profile, NS.settings.style) or {}
     state.upgrades = profile and NS.Engine.BestUpgrades(NS.Route.lastAvailable or {}, player, profile) or {}
     -- RADAR-01 (#199): quest givers near the player, over the ATT positions of the
     -- quests NextQuests already deemed available (lastAvailable, fresh only when
     -- Plan ran, hence the profile gate). C_Map positions are 0-1 fractions; the
     -- engine wants map percent like the imported data. Without a map ID or a
-    -- player position nothing is shown — never a guess.
+    -- player position nothing is shown — never a guess. Must run before SmartTips
+    -- so the "quest givers nearby" tip sees this refresh's count, not 0.
     state.nearby = nil
     if profile and player.mapID then
         local position = call(api(C_Map, "GetPlayerMapPosition"), player.mapID, "player")
@@ -412,6 +463,9 @@ function C.NextQuests(state, profile)
             end
         end
     end
+    state.tips = NS.Engine.SmartTips(player,
+        state.nearby and state.nearby.givers and #state.nearby.givers or 0,
+        NS.Route.customActive)
     local verb = { accept = "Accept: ", turnin = "Turn in: ", complete = "Complete: " }
     for _, row in ipairs(rows) do
         local title = call(titleFor, row.questID)
@@ -427,6 +481,7 @@ function C.NextQuests(state, profile)
         -- Provenance (spor B): what backs this row — the quest record, the route, or the live client.
         row.provenance = {}
         local node = byQuestID[row.questID]
+        row.evidence = C.EvidenceOf(node, row.bestReward)
         if node and type(node.provenance) == "table" then row.provenance[#row.provenance + 1] = node.provenance end
         if row.action then
             if NS.Route.customActive then

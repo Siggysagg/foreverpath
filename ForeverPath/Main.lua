@@ -1,6 +1,7 @@
 local addonName, NS = ...
-NS.dialogOpen, NS.tipRevision = false, 0
+NS.dialogOpen = false
 local pending, initialized, lastEventRefresh = false, false, nil
+local enteredWorld = false
 local function message(text) print("|cff42dbbdForeverPath:|r " .. text) end
 function NS.Refresh()
     if not initialized then return end
@@ -42,15 +43,20 @@ local function invalidateDismissedTip(event, arg1)
         NS.settings.dismissedTip = nil
     end
 end
-function NS.QueueRefresh()
-    if pending or not initialized then return end
+local pendingUrgent, scheduled  -- token of the refresh that will run; a newer urgent one supersedes it
+function NS.QueueRefresh(urgent, minGap)
+    if not initialized or (pending and (not urgent or pendingUrgent)) then return end
     local seconds = tonumber(NS.settings.tipThrottleSeconds) or 10
     if seconds < 0 then seconds = 10 end
     local now = GetTime and GetTime() or 0
-    local delay = lastEventRefresh and math.max(0, seconds - (now - lastEventRefresh)) or 0.2
-    pending = true
+    local gap = urgent and (minGap or 0) or seconds  -- QUEST_LOG_UPDATE bursts keep a floor between refreshes
+    local delay = lastEventRefresh and math.max(0.2, gap - (now - lastEventRefresh)) or 0.2
+    pending, pendingUrgent = true, urgent and true or false  -- a burst of urgent events shares one timer
+    local token = {}
+    scheduled = token
     local function refresh()
-        pending = false
+        if scheduled ~= token then return end
+        pending, pendingUrgent = false, false
         lastEventRefresh = GetTime and GetTime() or now
         NS.Refresh()
     end
@@ -91,6 +97,7 @@ function NS.CycleStyle()
     end
     NS.SetStyle("balanced")
 end
+local slowEvents = { BAG_UPDATE_DELAYED = true, PLAYER_EQUIPMENT_CHANGED = true, GET_ITEM_INFO_RECEIVED = true, ITEM_DATA_LOAD_RESULT = true, QUEST_DATA_LOAD_RESULT = true }
 local events = CreateFrame("Frame")
 local function register(event)
     local ok = pcall(events.RegisterEvent,events,event)
@@ -105,7 +112,6 @@ events:SetScript("OnEvent",function(_,event,arg1)
         pcall(NS.MigrateSettings, NS.settings)
         if not NS.Engine.profiles[NS.settings.profile] then NS.settings.profile = nil end
         if not NS.Route.styles[NS.settings.style] then NS.settings.style = "balanced" end
-        NS.settings.goal = nil
         if type(NS.settings.tipThrottleSeconds) ~= "number" or NS.settings.tipThrottleSeconds < 0 then NS.settings.tipThrottleSeconds = 10 end
         initialized = true
         for _, name in ipairs({"PLAYER_ENTERING_WORLD","PLAYER_LEVEL_UP","PLAYER_EQUIPMENT_CHANGED","BAG_UPDATE_DELAYED",
@@ -118,8 +124,11 @@ events:SetScript("OnEvent",function(_,event,arg1)
         return
     end
     if event == "PLAYER_ENTERING_WORLD" then
-        if not NS.settings.setupDone then NS.UI.Setup() end
-        if NS.settings.compact ~= false then NS.UI.Compact(true) end
+        if not enteredWorld then  -- every loading screen fires this; the first-run setup and card open once per session
+            enteredWorld = true
+            if not NS.settings.setupDone then NS.UI.Setup() end
+            if NS.settings.compact ~= false then NS.UI.Compact(true) end
+        end
     end
     if event == "QUEST_DETAIL" or event == "QUEST_PROGRESS" or event == "QUEST_COMPLETE" then
         NS.dialogOpen = true; NS.Client.requested = {}
@@ -129,14 +138,17 @@ events:SetScript("OnEvent",function(_,event,arg1)
     elseif event == "QUEST_LOG_UPDATE" then
         invalidateDismissedTip(event, arg1)
         NS.Client.MarkLogDirty()  -- one log reread replaces the full per-quest scan (#101)
+        return NS.QueueRefresh(true, 1)  -- objective progress ("3/5") must show now, not after the tip delay
     elseif event == "QUEST_ACCEPTED" or event == "QUEST_TURNED_IN" then
         invalidateDismissedTip(event, arg1)
         NS.Client.MarkQuestDirty(arg1)  -- arg1 is the quest ID; only it is rechecked (#101)
         if event == "QUEST_TURNED_IN" and NS.UI and NS.UI.Celebrate then NS.UI.Celebrate(arg1) end
+        return NS.QueueRefresh(true)  -- the tip-delay setting must not slow quest progress
     elseif event == "GET_ITEM_INFO_RECEIVED" or event == "ITEM_DATA_LOAD_RESULT" then
         if not NS.Client.requested[arg1] then return end
     end
-    NS.QueueRefresh()
+    -- Only item-data noise waits out the tip delay; zone, combat-end and quest-data events are quick.
+    NS.QueueRefresh(not slowEvents[event])
 end)
 -- Save-format versioning (spor G): every older SavedVariables blob becomes version 1
 -- on load; future breaking changes run ordered migration steps from here. Idempotent

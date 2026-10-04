@@ -372,12 +372,9 @@ local function shareEscape(text)
 end
 
 local function shareUnescape(text)
-    text = string.gsub(text, "\\A", "@")
-    text = string.gsub(text, "\\S", ";")
-    text = string.gsub(text, "\\P", "|")
-    text = string.gsub(text, "\\C", ",")
-    text = string.gsub(text, "\\\\", "\\")
-    return text
+    -- Decode each escape once; an escaped backslash must not start another escape.
+    local escapes = { A = "@", S = ";", P = "|", C = ",", ["\\"] = "\\" }
+    return (string.gsub(text, "\\(.)", function(code) return escapes[code] or ("\\" .. code) end))
 end
 
 local function numberOrEmpty(value)

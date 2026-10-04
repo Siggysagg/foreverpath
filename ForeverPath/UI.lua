@@ -1,20 +1,29 @@
 local _, NS = ...
 local U = {}
 NS.UI = U
--- Design tokens: every color the UI renders comes from this one table (UPGRADE_PLAN spor D).
+-- Design tokens (UPGRADE_PLAN spor D): every color the UI renders comes from this
+-- one table. Roles, not moods: bg < bgCard < bgRaised for depth, text > textDim >
+-- textMuted for hierarchy, one accent family, and the semantic colors carry only
+-- meaning (green = good/ready, yellow = waiting, red = cannot use).
 U.theme = {
-    -- Modern palette: deeper blue-tinted base, softer borders, richer accent
-    accent = {0.30, 0.72, 1.00},
-    accentDim = {0.15, 0.36, 0.50},   -- glow and separators
-    muted = {0.55, 0.61, 0.70},       -- slightly darker for better contrast
-    border = {0.12, 0.18, 0.26},      -- softer, less visible
-    borderAlpha = 0.4,                 -- was 0.9 — modern UIs use subtle edges
-    bg = {0.015, 0.025, 0.045},       -- deeper blue-black
-    bgCard = {0.04, 0.06, 0.09},      -- card-level, slightly lighter
-    text = {0.92, 0.95, 1.00},        -- brighter for contrast
-    textDim = {0.75, 0.80, 0.88},     -- secondary text
-    green = {0.37, 0.84, 0.55}, red = {0.88, 0.42, 0.42}, yellow = {0.93, 0.78, 0.36}, gray = {0.55, 0.60, 0.67},
+    accent       = {0.30, 0.72, 1.00},
+    accentDim    = {0.13, 0.34, 0.52},   -- glow, separators, primary-button fill
+    bg           = {0.02, 0.03, 0.05},   -- window base
+    bgCard       = {0.055, 0.075, 0.11}, -- cards and list rows
+    bgRaised     = {0.085, 0.11, 0.155}, -- buttons and the hero panel
+    bgTrack      = {0.05, 0.08, 0.12},   -- progress track, recessed wells
+    border       = {0.16, 0.22, 0.30},
+    borderAlpha  = 0.55,
+    borderStrong = {0.32, 0.44, 0.56},   -- hover edges
+    text         = {0.95, 0.97, 1.00},
+    textDim      = {0.80, 0.85, 0.92},
+    textMuted    = {0.62, 0.68, 0.78},
+    muted        = {0.62, 0.68, 0.78},   -- legacy alias (kept: older call sites/tests)
+    green = {0.35, 0.85, 0.55}, red = {0.92, 0.45, 0.45}, yellow = {0.95, 0.80, 0.40}, gray = {0.58, 0.63, 0.70},
 }
+-- Type scale: one size per role — window title 18, page titles 16, the NOW
+-- headline 14, body 12, hints and metadata 11, chips and tab glyphs 10.
+U.type = { title = 18, page = 16, headline = 14, body = 12, small = 11, tiny = 10 }
 -- Verdict colors: the green/red pair also differs in lightness so hue alone never carries the meaning.
 U.theme.verdict = {
     ["Do next"] = U.theme.accent, ["Then"] = U.theme.gray, ["Optional"] = U.theme.gray, ["Ready when you are"] = U.theme.gray,
@@ -55,10 +64,9 @@ local function panel(parent, name, width, height, alphaScale)
     f.alphaScale = alphaScale
     if f.SetBackdrop then
         f:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
-        -- Modern: softer border (lower alpha), deeper background
-        f:SetBackdropBorderColor(U.theme.border[1], U.theme.border[2], U.theme.border[3], U.theme.borderAlpha or 0.4)
+        f:SetBackdropBorderColor(U.theme.border[1], U.theme.border[2], U.theme.border[3], U.theme.borderAlpha or 0.55)
     end
-    -- Depth layer: subtle top-light gradient overlay for visual dimension
+    -- Depth layer: subtle top-light so panels read as surfaces, not flat fills
     local gradient = f:CreateTexture(nil, "BACKGROUND")
     gradient:SetPoint("TOPLEFT", 1, -1)
     gradient:SetPoint("TOPRIGHT", -1, -1)
@@ -68,31 +76,76 @@ local function panel(parent, name, width, height, alphaScale)
     U.panels[#U.panels + 1] = f
     return f
 end
+-- Default text color follows the type scale: titles read brightest, body copy
+-- slightly dimmer, hints and metadata the dimmest. Explicit SetTextColor wins.
 local function label(parent, text, size, x, y, width)
     local f = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     f:SetFont(STANDARD_TEXT_FONT, size)
     f:SetPoint("TOPLEFT", x, y)
     f:SetWidth(width)
     f:SetJustifyH("LEFT")
-    f:SetTextColor(unpack(size >= 14 and U.theme.text or U.theme.textDim))
+    local default = size >= 14 and U.theme.text or (size >= 12 and U.theme.textDim or U.theme.textMuted)
+    f:SetTextColor(unpack(default))
     f:SetText(text)
     return f
 end
-local function button(parent, text, x, y, width, action, height)
-    local b = CreateFrame("Button", nil, parent)
-    b:SetSize(width, height or 28); b:SetPoint("TOPLEFT", x, y)
-    local bg = b:CreateTexture(nil, "BACKGROUND"); bg:SetAllPoints()
-    bg:SetColorTexture(U.theme.bgCard[1], U.theme.bgCard[2], U.theme.bgCard[3], 0.85)
-    local glow = b:CreateTexture(nil, "BORDER"); glow:SetAllPoints()
-    glow:SetColorTexture(U.theme.accentDim[1], U.theme.accentDim[2], U.theme.accentDim[3], 0)
+-- Section header: small caps-style label that opens a group of rows. Used instead
+-- of ad-hoc header sizes so every group on every view reads the same way.
+local function sectionHeader(parent, text, x, y, width, color)
+    local f = label(parent, text, U.type.body, x, y, width)
+    f:SetTextColor(unpack(color or U.theme.textMuted))
+    return f
+end
+-- One button for the whole UI: ghost by default, `opts.primary` for the single
+-- main action of a view. Hover lights the edge (accent for primary) and a native
+-- HIGHLIGHT-layer glow; pressing offsets the label until release or pointer exit.
+-- b.title stays the label handle (tests and callers read it).
+local function button(parent, text, x, y, width, action, height, opts)
+    local h = height or 26
+    local primary = opts and opts.primary
+    local small = opts and opts.small
+    local b = CreateFrame("Button", nil, parent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+    b:SetSize(width, h); b:SetPoint("TOPLEFT", x, y)
+    if b.SetBackdrop then
+        b:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
+        local fill = primary and U.theme.accentDim or U.theme.bgRaised
+        b:SetBackdropColor(fill[1], fill[2], fill[3], primary and 0.45 or 0.85)
+        local edge = primary and U.theme.accent or U.theme.border
+        b:SetBackdropBorderColor(edge[1], edge[2], edge[3], primary and 0.8 or U.theme.borderAlpha)
+    end
+    local glow = b:CreateTexture(nil, "HIGHLIGHT")
+    glow:SetAllPoints()
+    glow:SetColorTexture(U.theme.accentDim[1], U.theme.accentDim[2], U.theme.accentDim[3], 0.22)
     local title = b:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    title:SetPoint("CENTER"); title:SetTextColor(unpack(accent)); title:SetText(text)
+    title:SetFont(STANDARD_TEXT_FONT, small and U.type.tiny or U.type.body)
+    b.titleAnchor = {"CENTER", 0, 0}
+    title:SetPoint(unpack(b.titleAnchor))
+    title:SetTextColor(unpack(primary and U.theme.text or accent))
+    title:SetText(text)
     b.title = title
-    -- Modern hover: soft accent glow instead of hard color swap
-    b:SetScript("OnEnter", function()
-        glow:SetColorTexture(U.theme.accentDim[1], U.theme.accentDim[2], U.theme.accentDim[3], 0.15)
+    local function press(down)
+        local anchor = b.titleAnchor
+        title:ClearAllPoints()
+        title:SetPoint(anchor[1], anchor[2] + (down and 1 or 0), anchor[3] - (down and 1 or 0))
+    end
+    b:SetScript("OnMouseDown", function(_, mouseButton)
+        if mouseButton == "LeftButton" then press(true) end
     end)
-    b:SetScript("OnLeave", function() glow:SetColorTexture(0, 0, 0, 0) end)
+    b:SetScript("OnMouseUp", function() press(false) end)
+    b:SetScript("OnHide", function() press(false) end)
+    b:SetScript("OnEnter", function(self)
+        if self.SetBackdropBorderColor then
+            local edge = primary and U.theme.accent or U.theme.borderStrong
+            self:SetBackdropBorderColor(edge[1], edge[2], edge[3], 0.9)
+        end
+    end)
+    b:SetScript("OnLeave", function(self)
+        press(false)
+        if self.SetBackdropBorderColor then
+            local edge = primary and U.theme.accent or U.theme.border
+            self:SetBackdropBorderColor(edge[1], edge[2], edge[3], primary and 0.8 or U.theme.borderAlpha)
+        end
+    end)
     b:SetScript("OnClick", action)
     return b
 end
@@ -148,50 +201,9 @@ function U.SetOpacity(value)
     for _, f in ipairs(U.panels) do paint(f) end
 end
 
--- Tab navigation (UI-08): vertical tabs on the left side of the main window.
--- Each tab shows/hides a group of elements without separate frames.
-U.TAB_ORDER = { "NOW", "ROUTE", "DATA" }
-U.tab = U.tab or "NOW"
-
-function U.ShowTab(name)
-    U.tab = name
-    if not U.frame then return end
-    local now = name == "NOW"
-    local route = name == "ROUTE"
-    local data = name == "DATA"
-    -- NOW tab: hero, upgrades, banner/context
-    if U.hero then U.hero:SetShown(now) end
-    if U.upgradeHeader then U.upgradeHeader:SetShown(now) end
-    for i = 1, 3 do
-        if U.upgradeSlots[i] then U.upgradeSlots[i]:SetShown(now) end
-        if U.upgradeDetails[i] then U.upgradeDetails[i]:SetShown(now) end
-    end
-    if U.banner then U.banner:SetShown(now) end
-    if U.context then U.context:SetShown(now) end
-    -- ROUTE tab: progress bar, card list, playstyle controls
-    if U.progress then U.progress:SetShown(route) end
-    if U.progressLabel then U.progressLabel:SetShown(route or data) end
-    if U.scroll then U.scroll:SetShown(route) end
-    if U.profile then U.profile:SetShown(route) end
-    if U.goal then U.goal:SetShown(route) end
-    -- DATA tab: session, CPU, footer
-    if U.sessionLine then U.sessionLine:SetShown(data) end
-    if U.cpuLine then U.cpuLine:SetShown(data) end
-    if U.footer then U.footer:SetShown(data) end
-    -- Tab button highlighting
-    if U.tabButtons then
-        for _, tabName in ipairs(U.TAB_ORDER) do
-            local btn = U.tabButtons[tabName]
-            if btn and btn.title then
-                local active = tabName == name
-                btn.title:SetTextColor(active and U.theme.accent[1] or U.theme.muted[1],
-                    active and U.theme.accent[2] or U.theme.muted[2],
-                    active and U.theme.accent[3] or U.theme.muted[3])
-            end
-        end
-    end
-    NS.Refresh()
-end
+-- One inner content measure: cards, hero, progress bar and the scroll area share
+-- the same width so every view lines up on the same grid (was 664/676/696 mixed).
+local INNER_W = 664
 
 function U.Create()
     if U.frame then return end
@@ -203,7 +215,7 @@ function U.Create()
     U.Restore(f, "position", "CENTER")
     table.insert(UISpecialFrames, "ForeverPathWindow")
 
-    -- Modern separator: gradient accent
+    -- Brand moment: gradient accent stripe across the top edge
     local stripe = f:CreateTexture(nil,"ARTWORK"); stripe:SetPoint("TOPLEFT",1,-1); stripe:SetSize(778,3)
     stripe:SetColorTexture(U.theme.accentDim[1], U.theme.accentDim[2], U.theme.accentDim[3], 0.8)
     if stripe.SetGradientAlpha then
@@ -211,30 +223,37 @@ function U.Create()
             U.theme.accent[1], U.theme.accent[2], U.theme.accent[3], 0.9,
             U.theme.accentDim[1], U.theme.accentDim[2], U.theme.accentDim[3], 0.0)
     end
-    label(f,"FOREVERPATH",20,60,-24,300)
+    label(f,"FOREVERPATH",U.type.title,60,-20,300)
     button(f,"X",744,-20,30,function() f:Hide() end)
 
-    -- LEFT SIDEBAR: vertical tab navigation (ElvUI-inspired)
+    -- LEFT SIDEBAR: vertical tab navigation; the active tab gets an accent rail
     local SIDEBAR_X, SIDEBAR_W = 4, 44
     f.tabs = {}
     f.tabContent = {}
+    f.tabBars = {}
     local TABS = {
-        { id = "now",       label = "NÅ",       icon = "◆" },
+        { id = "now",       label = "NOW",      icon = "◆" },
         { id = "upgrades",  label = "GEAR",      icon = "⚡" },
-        { id = "route",     label = "RUTE",      icon = "▸" },
-        { id = "settings",  label = "SET",       icon = "⚙" },
+        { id = "route",     label = "ROUTE",     icon = "▸" },
+        { id = "settings",  label = "SETTINGS",  icon = "⚙" },
     }
     for i, tab in ipairs(TABS) do
         local b = button(f, tab.icon, SIDEBAR_X, -60 - (i - 1) * 52, SIDEBAR_W, function()
             U.SetActiveTab(tab.id)
         end, 44)
+        local bar = b:CreateTexture(nil, "OVERLAY")
+        bar:SetPoint("TOPLEFT", 0, 0)
+        bar:SetSize(3, 44)
+        bar:SetColorTexture(unpack(U.theme.accent))
+        bar:Hide()
+        f.tabBars[tab.id] = bar
         -- Tab label under icon
-        local tabLabel = label(f, tab.label, 9, SIDEBAR_X + 4, -60 - (i - 1) * 52 - 36, SIDEBAR_W - 4)
+        local tabLabel = label(f, tab.label, U.type.tiny, SIDEBAR_X, -60 - (i - 1) * 52 - 36, SIDEBAR_W + 4)
         tabLabel:SetJustifyH("CENTER")
         f.tabs[tab.id] = b
         f.tabs[tab.id .. "_label"] = tabLabel
     end
-    -- Sidebar separator (vertical gradient line)
+    -- Sidebar separator (vertical line between rail and content)
     local sidebarLine = f:CreateTexture(nil, "ARTWORK")
     sidebarLine:SetPoint("TOPLEFT", SIDEBAR_X + SIDEBAR_W + 4, -50)
     sidebarLine:SetWidth(1); sidebarLine:SetHeight(480)
@@ -242,77 +261,89 @@ function U.Create()
 
     -- CONTENT AREA: each tab gets a container frame, shown/hidden by SetActiveTab
     local CONTENT_X = SIDEBAR_X + SIDEBAR_W + 16
-    local CONTENT_W = 780 - CONTENT_X - 20
 
-    -- "NOW" tab content: everything from the old layout
+    -- "NOW" tab content: the working view
     local now = CreateFrame("Frame", nil, f)
     now:SetPoint("TOPLEFT", CONTENT_X, -50)
-    now:SetSize(CONTENT_W, 500)
+    now:SetSize(INNER_W + 32, 460)
     f.tabContent.now = now
 
     -- "UPGRADES" tab: full upgrade finder view
     local upg = CreateFrame("Frame", nil, f)
     upg:SetPoint("TOPLEFT", CONTENT_X, -50)
-    upg:SetSize(CONTENT_W, 500)
+    upg:SetSize(INNER_W + 32, 460)
     f.tabContent.upgrades = upg
-    label(upg, "UPGRADES AVAILABLE NOW", 16, 12, -12, CONTENT_W - 20):SetTextColor(unpack(U.theme.green))
-    upg.subtitle = label(upg, "Best quest reward per gear slot, for your class and level.", 11, 12, -36, CONTENT_W - 20)
+    label(upg, "UPGRADES AVAILABLE NOW", U.type.page, 0, -12, INNER_W):SetTextColor(unpack(U.theme.green))
+    upg.subtitle = label(upg, "Best quest reward per gear slot, for your class and level.", U.type.small, 0, -36, INNER_W)
     upg.subtitle:SetTextColor(unpack(muted))
+    -- One multiline fontstring (up to 8 upgrades); U.Render rewrites it only when the text changes.
+    upg.list = label(upg, "", U.type.body, 0, -64, INNER_W)
+    upg.list:SetJustifyV("TOP")
+    U.gearList = upg.list
 
     -- "ROUTE" tab: route management
     local rte = CreateFrame("Frame", nil, f)
     rte:SetPoint("TOPLEFT", CONTENT_X, -50)
-    rte:SetSize(CONTENT_W, 500)
+    rte:SetSize(INNER_W + 32, 460)
     f.tabContent.route = rte
-    label(rte, "YOUR ROUTE", 16, 12, -12, CONTENT_W - 20)
-    rte.subtitle = label(rte, "Import, share and manage your custom routes.", 11, 12, -36, CONTENT_W - 20)
+    label(rte, "YOUR ROUTE", U.type.page, 0, -12, INNER_W)
+    rte.subtitle = label(rte, "Import, share and manage your custom routes.", U.type.small, 0, -36, INNER_W)
     rte.subtitle:SetTextColor(unpack(muted))
+    U.routeInfo = label(rte, "", U.type.body, 0, -64, INNER_W); U.routeInfo:SetTextColor(unpack(muted))
+    button(rte, "Import / share route", 0, -92, 190, function() U.RouteImport() end, 26, { primary = true })
+    U.routeStyle = button(rte, "Playstyle: Balanced", 200, -92, 190, function() NS.CycleStyle() end)
 
     -- "SETTINGS" tab: settings content (existing elements will be re-parented)
     local set = CreateFrame("Frame", nil, f)
     set:SetPoint("TOPLEFT", CONTENT_X, -50)
-    set:SetSize(CONTENT_W, 500)
+    set:SetSize(INNER_W + 32, 460)
     f.tabContent.settings = set
+    label(set, "SETTINGS", U.type.page, 0, -12, INNER_W)
+    button(set, "Open settings", 0, -48, 190, function() U.Settings() end)
+    button(set, "Run setup again", 0, -84, 190, function() U.Setup() end)
+    button(set, "Diagnostics", 0, -120, 190, function() U.Diagnostics() end)
 
     -- NOW tab: populate with existing UI elements (re-parented from f to now)
-    U.banner = label(now,"",13,0,-38,now:GetWidth())
-    U.context = label(now,"",12,0,-61,now:GetWidth()); U.context:SetTextColor(unpack(muted))
+    U.banner = label(now,"",U.type.headline,0,-38,INNER_W)
+    U.banner:SetTextColor(unpack(U.theme.accent))
+    U.context = label(now,"",U.type.small,0,-61,INNER_W); U.context:SetTextColor(unpack(muted))
     U.profile = button(now,"Profile",0,-88,110,function() NS.CycleProfile() end)
     U.goal = button(now,"Playstyle: Balanced",116,-88,110,function() NS.CycleStyle() end)
-    button(now,"Compact",232,-88,90,function() U.ToggleCompact() end)
+    button(now,"Tips card",232,-88,90,function() U.ToggleCompact() end)
     U.refresh = button(now,"Refresh",328,-88,90,function() NS.Refresh() end)
-    button(now,"Diag",424,-88,60,function() U.Diagnostics() end)
 
     -- Route position
-    U.progressLabel = label(now,"",11,0,-120,now:GetWidth()); U.progressLabel:SetTextColor(unpack(muted))
+    U.progressLabel = label(now,"",U.type.small,0,-120,INNER_W); U.progressLabel:SetTextColor(unpack(muted))
     U.progress = CreateFrame("Frame",nil,now)
-    U.progress:SetPoint("TOPLEFT",0,-134); U.progress:SetSize(now:GetWidth(),6)
+    U.progress:SetPoint("TOPLEFT",0,-134); U.progress:SetSize(INNER_W,6)
     U.progress.background = U.progress:CreateTexture(nil,"BACKGROUND")
-    U.progress.background:SetAllPoints(); U.progress.background:SetColorTexture(0.05,0.08,0.12,0.9)
+    U.progress.background:SetAllPoints(); U.progress.background:SetColorTexture(U.theme.bgTrack[1],U.theme.bgTrack[2],U.theme.bgTrack[3],0.9)
     U.progress.fill = U.progress:CreateTexture(nil,"ARTWORK")
     U.progress.fill:SetPoint("TOPLEFT"); U.progress.fill:SetHeight(6)
     U.progress.fill:SetColorTexture(unpack(accent))
     U.progress:Hide()
 
     -- Upgrade section
-    U.upgradeHeader = label(now,"UPGRADES AVAILABLE NOW",12,0,-148,now:GetWidth())
-    U.upgradeHeader:SetTextColor(unpack(U.theme.green))
+    U.upgradeHeader = sectionHeader(now,"UPGRADES AVAILABLE NOW",0,-148,INNER_W,U.theme.green)
     U.upgradeSlots = {}
     U.upgradeDetails = {}
     for i = 1, 3 do
-        U.upgradeSlots[i] = label(now,"",12,0,-162 - (i - 1) * 16,80)
+        U.upgradeSlots[i] = label(now,"",U.type.body,0,-162 - (i - 1) * 16,86)
         U.upgradeSlots[i]:SetTextColor(unpack(U.theme.green))
-        U.upgradeDetails[i] = label(now,"",12,94,-162 - (i - 1) * 16,now:GetWidth() - 100)
+        U.upgradeDetails[i] = label(now,"",U.type.body,100,-162 - (i - 1) * 16,INNER_W - 104)
     end
     U.upgradeHeader:Hide()
 
-    -- Hero panel
-    U.hero = panel(now, "ForeverPathHero", now:GetWidth(), 78)
+    -- Hero panel: the single next step, with the primary "Show way" action
+    U.hero = panel(now, "ForeverPathHero", INNER_W, 62)
     U.hero:SetPoint("TOPLEFT", 0, -218)
-    U.hero.title = label(U.hero, "", 15, 16, -8, now:GetWidth() - 130)
-    U.hero.reason = label(U.hero, "", 12, 16, -46, now:GetWidth() - 130); U.hero.reason:SetTextColor(unpack(muted))
-    U.hero.way = button(U.hero, "Show way", now:GetWidth() - 110, -12, 96, function() if U.hero.row then NS.Nav.Pin(U.hero.row) end end, 26)
-    U.hero.distance = label(U.hero, "", 12, now:GetWidth() - 110, -46, 96); U.hero.distance:SetTextColor(unpack(accent))
+    U.hero.stripe = U.hero:CreateTexture(nil, "ARTWORK")
+    U.hero.stripe:SetSize(3, 62); U.hero.stripe:SetPoint("TOPLEFT", 0, 0)
+    U.hero.stripe:SetColorTexture(unpack(U.theme.accent))
+    U.hero.title = label(U.hero, "", 15, 16, -8, INNER_W - 130)
+    U.hero.reason = label(U.hero, "", U.type.body, 16, -34, INNER_W - 130); U.hero.reason:SetTextColor(unpack(muted))
+    U.hero.way = button(U.hero, "Show way", INNER_W - 110, -14, 96, function() if U.hero.row then NS.Nav.Pin(U.hero.row) end end, 26, { primary = true })
+    U.hero.distance = label(U.hero, "", U.type.small, INNER_W - 110, -44, 96); U.hero.distance:SetTextColor(unpack(accent))
     local heroElapsed = 0
     U.hero:SetScript("OnUpdate", function(_, delta)
         heroElapsed = heroElapsed + (delta or 0)
@@ -324,17 +355,19 @@ function U.Create()
         heroGlow:SetColorTexture(U.theme.accentDim[1], U.theme.accentDim[2], U.theme.accentDim[3], 0.06)
     end
     U.hero:Hide()
+    -- Smart-tips line (TIPS-01): directly under the hero panel, above the card list.
+    U.tipLine = label(now, "", U.type.small, 0, -281, INNER_W); U.tipLine:SetTextColor(unpack(U.theme.yellow))
+    U.tipLine:Hide()
 
-    -- Card list (scroll)
+    -- Card list (scroll); the scrollbar band is the 32px right inset
     local scroll = CreateFrame("ScrollFrame",nil,now,"UIPanelScrollFrameTemplate")
-    scroll:SetPoint("TOPLEFT",0,-310); scroll:SetPoint("BOTTOMRIGHT",-20,10)
-    U.child = CreateFrame("Frame",nil,scroll); U.child:SetSize(now:GetWidth() - 20,1); scroll:SetScrollChild(U.child)
+    scroll:SetPoint("TOPLEFT",0,-310); scroll:SetPoint("BOTTOMRIGHT",-32,10)
+    U.child = CreateFrame("Frame",nil,scroll); U.child:SetSize(INNER_W,1); scroll:SetScrollChild(U.child)
     U.scroll, U.cards = scroll, {}
 
     -- Footer
-    U.footer = label(f,"",11,60,-534,680); U.footer:SetTextColor(unpack(muted))
-    U.sessionLine = label(f,"",11,60,-548,680); U.sessionLine:SetTextColor(unpack(U.theme.green))
-    U.cpuLine = label(f,"",11,60,-562,680); U.cpuLine:SetTextColor(unpack(muted))
+    U.sessionLine = label(f,"",U.type.small,60,-530,696); U.sessionLine:SetTextColor(unpack(U.theme.green))
+    U.cpuLine = label(f,"",U.type.small,60,-544,696); U.cpuLine:SetTextColor(unpack(muted))
 
     -- Default to "now" tab
     U.SetActiveTab(NS.settings.activeTab or "now")
@@ -347,12 +380,19 @@ function U.SetActiveTab(id)
     for tabId, content in pairs(U.frame.tabContent) do
         if tabId == id then content:Show() else content:Hide() end
     end
-    for tabId, btn in pairs(U.frame.tabs) do
-        if type(btn) == "table" and btn.title then -- it's a button, not a label
+    for tabId, widget in pairs(U.frame.tabs) do
+        if type(widget) == "table" and widget.title then -- a tab button
             local active = tabId == id
-            local color = active and U.theme.accent or U.theme.muted
-            btn.title:SetTextColor(color[1], color[2], color[3])
+            local color = active and U.theme.accent or U.theme.textMuted
+            widget.title:SetTextColor(color[1], color[2], color[3])
+        elseif type(widget) == "table" and widget.SetTextColor then -- a tab label (font string)
+            local labelTabId = string.gsub(tabId, "_label$", "")
+            local color = labelTabId == id and U.theme.text or U.theme.textMuted
+            widget:SetTextColor(color[1], color[2], color[3])
         end
+    end
+    for tabId, bar in pairs(U.frame.tabBars or {}) do
+        if tabId == id then bar:Show() else bar:Hide() end
     end
 end
 
@@ -380,26 +420,37 @@ function U.ProvenanceLines(row)
         end
     end
     if #lines == 0 then lines[#lines + 1] = "Read live from the game client" end
+    local _, _, note = U.EvidenceTag(row)
+    if note then lines[#lines + 1] = note end
     return lines
+end
+
+-- Pure: muted "unverified" marker for rows resting on imported/estimated data; nil otherwise
+-- (live and verified rows get no tag). Returns short ("~"), long ("~ unverified"), and the
+-- one-line explanation.
+local UNVERIFIED_NOTE = "Imported data, not yet confirmed in game"
+function U.EvidenceTag(row)
+    if type(row) ~= "table" or row.evidence ~= "estimated" then return nil end
+    return "~", "~ unverified", UNVERIFIED_NOTE
 end
 
 function U.Provenance(row, anchor)
     if not U.prov then
-        local f = panel(UIParent, "ForeverPathProvenance", 340, 120, 0.9)
+        local f = panel(UIParent, "ForeverPathProvenance", 340, 136, 0.9)
         U.prov = f
         f:SetFrameStrata("FULLSCREEN_DIALOG")
         f:SetClampedToScreen(true)
         table.insert(UISpecialFrames, "ForeverPathProvenance")  -- Esc closes
-        label(f, "SOURCE — why we trust this", 12, 14, -10, 300):SetTextColor(unpack(U.theme.green))
+        label(f, "SOURCE — why we trust this", U.type.body, 14, -10, 300):SetTextColor(unpack(U.theme.green))
         U.prov.lines = {}
-        for i = 1, 4 do U.prov.lines[i] = label(f, "", 12, 14, -28 - (i - 1) * 16, 310) end
-        local hint = label(f, "Click the popover to close", 10, 14, -98, 300)
+        for i = 1, 5 do U.prov.lines[i] = label(f, "", 12, 14, -28 - (i - 1) * 16, 310) end
+        local hint = label(f, "Click the popover to close", 10, 14, -114, 300)
         hint:SetTextColor(unpack(muted))
         f:EnableMouse(true)
         f:SetScript("OnMouseUp", function(self) self:Hide() end)
     end
     local lines = U.ProvenanceLines(row)
-    for i = 1, 4 do
+    for i = 1, 5 do
         if lines[i] then U.prov.lines[i]:SetText(lines[i]); U.prov.lines[i]:Show() else U.prov.lines[i]:Hide() end
     end
     U.prov:ClearAllPoints()
@@ -430,7 +481,12 @@ local function heroDistance(row)
 end
 
 function U.UpdateHeroDistance()
-    if U.hero then U.hero.distance:SetText(heroDistance(U.hero.row) or "") end
+    if not U.hero then return end
+    local text = heroDistance(U.hero.row) or ""
+    if U.hero.lastDistance ~= text then
+        U.hero.lastDistance = text
+        U.hero.distance:SetText(text)
+    end
 end
 
 -- Pure: compact text that never comes back empty. Long text is truncated with an
@@ -486,51 +542,99 @@ function U.NearbyText(giver)
     return text
 end
 
+local COMPACT_MAX_ROWS, COMPACT_ROW_H, COMPACT_HEAD_H = 3, 34, 18
+
+-- Pure: how many step rows the compact list shows. Never 0: an empty state still
+-- gets one row carrying the status message (BUG-01).
+function U.CompactRowCount(rows)
+    return math.max(1, math.min(COMPACT_MAX_ROWS, type(rows) == "table" and #rows or 0))
+end
+
+-- Pure: hover tooltip content for one step - title, every reason, then the source
+-- lines. Each entry is { text, kind } with kind "title" | "reason" | "source".
+function U.CompactTooltipLines(row)
+    if type(row) ~= "table" then return {} end
+    local lines = { { tostring(row.title or "Next step"), "title" } }
+    for _, reason in ipairs(type(row.reasons) == "table" and row.reasons or {}) do
+        lines[#lines + 1] = { tostring(reason), "reason" }
+    end
+    for _, source in ipairs(U.ProvenanceLines(row)) do lines[#lines + 1] = { source, "source" } end
+    return lines
+end
+
+-- Row click: left pins the arrow to the step (only when it has a target; unknown
+-- data never clears or invents the arrow), right dismisses the tip. Returns the
+-- action taken for tests.
+function U.CompactClick(row, mouseButton)
+    if type(row) ~= "table" then return nil end
+    if mouseButton == "RightButton" then
+        if NS.DismissTip then NS.DismissTip(row); return "dismiss" end
+    elseif row.target and NS.Nav and NS.Nav.Pin then
+        NS.Nav.Pin(row); return "pin"
+    end
+    return nil
+end
+
+local function setCompactText(fs, text)
+    if fs.lastText ~= text then
+        fs:SetText(text); fs.lastText = text
+        animate(fs, function(target, value) target:SetAlpha(value) end, 0.35, 1, 0.15)
+    end
+end
+
 -- Everything inside pcall: a client-specific error must leave a visible card,
--- never an empty one (BUG-01).
+-- never an empty one (BUG-01). Row frames are pre-created once by U.Compact.
 local function renderCompact(rows, state)
     local h = U.hud
     if not h then return end
-    local first = rows[1]
-    local ok, title, reason = pcall(U.CompactText, first, state.message)
-    if not ok then
-        title, reason = "Compact error", "Send us /fp diag"
-        if NS.Client and NS.Client.errors then NS.Client.errors.last = "compact: " .. tostring(title) end
-    end
-    if h.title.lastText ~= title then
-        h.title:SetText(title); h.title.lastText = title
-        animate(h.title, function(target, value) target:SetAlpha(value) end, 0.35, 1, 0.15)
-    end
-    if h.reason.lastText ~= reason then
-        h.reason:SetText(reason); h.reason.lastText = reason
-        animate(h.reason, function(target, value) target:SetAlpha(value) end, 0.35, 1, 0.15)
-    end
-    -- Milestones and streaks (MILE-01/#200): a fresh milestone takes over the reason
-    -- line for one render (green, like the hero flash); a live streak rides along
-    -- after the suggestion when it fits the same budget as the distance chip.
-    -- Both texts come from the pure engine — no wording decisions here.
-    if U.milestoneMessage then
-        reason = U.milestoneMessage
-        if h.reason.lastText ~= reason then
-            h.reason:SetText(reason); h.reason.lastText = reason
-            animate(h.reason, function(target, value) target:SetAlpha(value) end, 0.35, 1, 0.15)
-        end
-        h.reason:SetTextColor(U.theme.green[1], U.theme.green[2], U.theme.green[3])
-    else
-        h.reason:SetTextColor(muted[1], muted[2], muted[3])
-        local streak = NS.Engine and NS.Engine.Streak and NS.Engine.Streak(U.streak or 0, U.diedSinceLastQuest) or nil
-        if streak and #reason + #streak + 3 <= 63 then
-            reason = reason .. " · " .. streak
-            if h.reason.lastText ~= reason then
-                h.reason:SetText(reason); h.reason.lastText = reason
-                animate(h.reason, function(target, value) target:SetAlpha(value) end, 0.35, 1, 0.15)
+    local count = U.CompactRowCount(rows)
+    for i = 1, COMPACT_MAX_ROWS do
+        local r = h.rows[i]
+        local row = i <= count and rows[i] or nil
+        if i > count then
+            r:Hide(); r.row = nil
+        else
+            r.row = row
+            r:Show()
+            local ok, title, reason = pcall(U.CompactText, row, state.message)
+            if not ok then
+                -- On failure `title` holds the pcall error: log it before the
+                -- placeholder replaces it, or Diagnostics says nothing useful.
+                if NS.Client and NS.Client.errors then NS.Client.errors.last = "compact: " .. tostring(title) end
+                title, reason = "Compact error", "Send us /fp diag"
             end
+            setCompactText(r.title, title)
+            r.tag:SetText(row and U.EvidenceTag(row) or "")
+            if i == 1 and U.milestoneMessage then
+                -- Milestones and streaks (MILE-01/#200): a fresh milestone takes over the
+                -- first row's reason for one render (green); a live streak rides along
+                -- when it fits the distance-chip budget. Wording comes from the engine.
+                setCompactText(r.reason, U.milestoneMessage)
+                r.reason:SetTextColor(U.theme.green[1], U.theme.green[2], U.theme.green[3])
+            else
+                r.reason:SetTextColor(muted[1], muted[2], muted[3])
+                if i == 1 then
+                    local streak = NS.Engine and NS.Engine.Streak and NS.Engine.Streak(U.streak or 0, U.diedSinceLastQuest) or nil
+                    if streak and #reason + #streak + 3 <= 63 then reason = reason .. " · " .. streak end
+                end
+                setCompactText(r.reason, reason)
+            end
+            -- Current step (row 1): verdict stripe at full strength, brighter title and
+            -- a soft highlight; the next steps sit dimmer.
+            local color = row and U.theme.verdict[row.verdict] or U.theme.accent
+            r.stripe:SetColorTexture(color[1], color[2], color[3], i == 1 and 1 or 0.5)
+            local text = i == 1 and U.theme.text or U.theme.textDim
+            r.title:SetTextColor(text[1], text[2], text[3])
+            r.bg:SetColorTexture(1, 1, 1, i == 1 and 0.07 or 0)
+            local icon = row and (row.icon or row.texture)
+            if icon and icon ~= "" then r.icon:SetTexture(icon); r.icon:Show() else r.icon:Hide() end
         end
     end
-    local color = first and U.theme.verdict[first.verdict] or U.theme.accent
-    h.stripe:SetColorTexture(color[1], color[2], color[3])
-    local icon = first and (first.icon or first.texture)
-    if icon and icon ~= "" then h.icon:SetTexture(icon); h.icon:Show() else h.icon:Hide() end
+    local height = COMPACT_HEAD_H + count * COMPACT_ROW_H + 2
+    if h.rowCount ~= count then h.rowCount = count; h:SetHeight(height) end
+    local locked = NS.settings.compactLocked and true or false
+    local lockText = locked and "Unlock" or "Lock"
+    if h.lock.title.lastText ~= lockText then h.lock.title:SetText(lockText); h.lock.title.lastText = lockText end
 end
 
 -- The upgrade section sits between the hero and the card list; when it is shown the
@@ -540,14 +644,14 @@ local function renderUpgrades(state)
     if #upgrades == 0 then
         U.upgradeHeader:Hide()
         for i = 1, 3 do U.upgradeSlots[i]:Hide(); U.upgradeDetails[i]:Hide() end
-        U.scroll:ClearAllPoints(); U.scroll:SetPoint("TOPLEFT",24,-296)
+        U.scroll:ClearAllPoints(); U.scroll:SetPoint("TOPLEFT",0,-296)
         return
     end
     U.upgradeHeader:Show()
     for i = 1, 3 do
         local row = upgrades[i]
         if row then
-            local detail = row.percent and string.format("+%d%%  %s (+%.1f)", row.percent, row.title, row.delta)
+            local detail = row.percent and string.format("+%.0f%%  %s (+%.1f)", row.percent, row.title, row.delta)
                 or string.format("%s (+%.1f)", row.title, row.delta)
             if #detail > 92 then detail = string.sub(detail, 1, 91) .. "..." end
             if U.upgradeSlots[i].lastText ~= row.slot then U.upgradeSlots[i]:SetText(row.slot); U.upgradeSlots[i].lastText = row.slot end
@@ -557,7 +661,22 @@ local function renderUpgrades(state)
             U.upgradeSlots[i]:Hide(); U.upgradeDetails[i]:Hide()
         end
     end
-    U.scroll:ClearAllPoints(); U.scroll:SetPoint("TOPLEFT",24,-372)
+    U.scroll:ClearAllPoints(); U.scroll:SetPoint("TOPLEFT",0,-372)
+end
+
+-- GEAR tab: every upgrade in state.upgrades (max 8), one multiline fontstring.
+local function renderGear(state)
+    if not U.gearList then return end
+    local upgrades = type(state.upgrades) == "table" and state.upgrades or {}
+    local lines = {}
+    for i = 1, math.min(#upgrades, 8) do
+        local row = upgrades[i]
+        lines[#lines + 1] = string.format("%s: %s", tostring(row.slot or "?"), row.percent
+            and string.format("+%.0f%%  %s (+%.1f)", row.percent, row.title or "?", row.delta or 0)
+            or string.format("%s (+%.1f)", row.title or "?", row.delta or 0))
+    end
+    local text = #lines > 0 and table.concat(lines, "\n") or "No upgrades found for your class and level right now. Check back after new quest rewards or level-ups."
+    if U.gearList.lastText ~= text then U.gearList:SetText(text); U.gearList.lastText = text end
 end
 
 -- RADAR-01 (#199): the NEARBY section sits at the top of the card list. Rows come
@@ -570,7 +689,7 @@ local function nearbyRow(index)
     if U.nearbyRows[index] then return U.nearbyRows[index] end
     local f = CreateFrame("Button", nil, U.child)
     f:SetSize(664, 16)
-    f.text = label(f, "", 12, 16, 0, 640)
+    f.text = label(f, "", 12, 8, 0, 648)
     f.giver, f.map = nil, nil
     f:SetScript("OnClick", function(self)
         if self.giver and self.map then
@@ -595,10 +714,10 @@ local function renderNearby(state)
     local nearby = state.mode ~= "rewards" and type(state.nearby) == "table" and state.nearby or nil
     local givers = nearby and type(nearby.givers) == "table" and nearby.givers or {}
     if not U.nearbyHeader then
-        U.nearbyHeader = label(U.child, "", 12, 16, 0, 640)
+        U.nearbyHeader = label(U.child, "", 12, 0, 0, 664)
         U.nearbyHeader:SetTextColor(unpack(accent))
         U.nearbyRows = {}
-        for i = 1, NEARBY_MAX do nearbyRow(i):SetPoint("TOPLEFT", 16, -18 - (i - 1) * 16) end
+        for i = 1, NEARBY_MAX do nearbyRow(i):SetPoint("TOPLEFT", 0, -18 - (i - 1) * 16) end
     end
     local shown = math.min(#givers, NEARBY_MAX)
     if shown == 0 then
@@ -627,7 +746,9 @@ local function renderNearby(state)
 end
 
 
--- Card factory: each quest/recommendation row in the scroll list.
+-- Card factory: each quest/recommendation row in the scroll list. The 3px verdict
+-- stripe pins to the left edge and grows with the card; icon, title, verdict badge
+-- and explanation sit on a shared grid with the rest of the UI.
 local function card(index)
     if U.cards[index] then return U.cards[index] end
     local f = panel(U.child,nil,664,110,0.7)
@@ -635,17 +756,18 @@ local function card(index)
     f.stripe:SetSize(3,110); f.stripe:SetPoint("TOPLEFT",0,0)
     f.stripe:SetColorTexture(unpack(U.theme.accent))
     f.icon = f:CreateTexture(nil,"ARTWORK")
-    f.icon:SetSize(34,34); f.icon:SetPoint("TOPLEFT",12,-10)
+    f.icon:SetSize(36,36); f.icon:SetPoint("TOPLEFT",12,-12)
     f.icon:SetTexCoord(0.08,0.92,0.08,0.92); f.icon:Hide()
-    f.title = label(f,"",15,54,-14,400)
-    f.badge = label(f,"",11,460,-16,190); f.badge:SetJustifyH("RIGHT")
-    f.body = label(f,"",12,56,-42,480); f.body:SetJustifyV("TOP")
+    f.title = label(f,"",14,56,-12,392)
+    f.badge = label(f,"",11,456,-15,192); f.badge:SetJustifyH("RIGHT")
+    f.evidence = label(f,"",10,456,-4,192); f.evidence:SetJustifyH("RIGHT"); f.evidence:SetTextColor(unpack(muted))
+    f.body = label(f,"",12,56,-36,560); f.body:SetJustifyV("TOP")
     -- CHAIN-01 (#198): horizontal chain stripe ("quest1 → quest2 → quest3"),
     -- accent-colored; anchored under the body during Render.
     f.chain = label(f,"",12,16,-56,560)
     f.chain:SetTextColor(unpack(accent))
     f.chain:Hide()
-    f.way = button(f,"Show way",548,-38,100,function() if f.row then NS.Nav.Pin(f.row) end end, 24)
+    f.way = button(f,"Show way",552,-38,100,function() if f.row then NS.Nav.Pin(f.row) end end, 24)
     f:EnableMouse(true)
     f:SetScript("OnEnter",function(self)
         if self.SetBackdropBorderColor then self:SetBackdropBorderColor(accent[1], accent[2], accent[3], 0.9) end
@@ -730,6 +852,18 @@ function U.Render(state)
     for _, row in ipairs(rows) do
         if row.stepTotal and row.stepTotal > 0 then stepRow = row break end
     end
+    -- Smart-tips (TIPS-01): contextual hints below the hero panel
+    local tips = state.tips or {}
+    if #tips > 0 and state.mode ~= "rewards" then
+        local tipText = table.concat(tips, "  |  ")
+        if U.tipLine then
+            tipText = "TIP: " .. tipText
+            if U.tipLine.lastText ~= tipText then U.tipLine:SetText(tipText); U.tipLine.lastText = tipText end
+            U.tipLine:Show()
+        end
+    elseif U.tipLine then
+        U.tipLine:Hide()
+    end
     if stepRow then
         U.progress:Show()
         local routeLabel = string.format("Route: %s — step %d of %d", stepRow.guideName or "?", stepRow.stepIndex or 0, stepRow.stepTotal)
@@ -737,7 +871,8 @@ function U.Render(state)
             routeLabel = routeLabel .. "  (dungeon guides start at level 13)"
         end
         U.progressLabel:SetText(routeLabel)
-        local target = 664 * math.min(1, math.max(0, (stepRow.stepIndex or 1) / stepRow.stepTotal))
+        U.routeLabelText = routeLabel
+        local target = INNER_W * math.min(1, math.max(0, (stepRow.stepIndex or 1) / stepRow.stepTotal))
         local key = stepRow.guideName .. ":" .. stepRow.stepIndex
         if U.progress.lastKey ~= key then
             animate(U.progress.fill, function(f, value) f:SetWidth(value) end, U.progress.lastWidth or 0, target, 0.4)
@@ -749,10 +884,14 @@ function U.Render(state)
         -- of silently hiding the progress area (UX-02).
         if state.mode ~= "rewards" and #rows > 0 then
             U.progressLabel:SetText("Route: no guide covers your level range yet - zone quests below")
+            U.routeLabelText = "Route: no guide covers your level range yet - zone quests below"
         else
             U.progressLabel:SetText("")
+            U.routeLabelText = "No route progress yet."
         end
     end
+    if U.routeInfo and U.routeInfo.lastText ~= U.routeLabelText then U.routeInfo:SetText(U.routeLabelText); U.routeInfo.lastText = U.routeLabelText end
+    if U.routeStyle then U.routeStyle.title:SetText("Playstyle: " .. (NS.Route.labels[NS.settings.style] or "Balanced")) end
     local hero = heroPick(rows, state.mode)
     if hero then
         if U.hero.lastRowId ~= hero.id then
@@ -778,6 +917,8 @@ function U.Render(state)
         local c = card(i)
         c.title:SetText(row and row.title or "Ready when you are")
         c.badge:SetText(row and row.verdict or "Waiting")
+        local _, longTag = U.EvidenceTag(row)
+        c.evidence:SetText(longTag or "")
         c.badge:SetTextColor(verdictColor(row and row.verdict or "Waiting"))
         c.title:SetTextColor(unpack(row and row.verdict == "Skip" and U.theme.muted or U.theme.text))
         -- UX-05: the stripe carries the verdict color. Skip de-emphasizes to muted,
@@ -796,7 +937,9 @@ function U.Render(state)
         end
         local arrow = U.ChainLine(row)
         if arrow then bodyLines[#bodyLines + 1] = arrow end
-        c.body:SetText(row and table.concat(bodyLines, "\n") or state.message or "No suggestions yet.")
+        c.body:SetText(row and table.concat(bodyLines, "\n")
+            or state.message
+            or "Press Refresh after entering the world. If this stays empty, run /fp setup to pick a playstyle.")
         local chainText = U.ChainText(row)
         if chainText then
             c.chain:SetText(chainText)
@@ -813,16 +956,18 @@ function U.Render(state)
             c.lastRowId = row and row.id or nil
         end
         if row and row.target then c.way:Show() else c.way:Hide() end
-        -- The item icon (when known) sits left of the text; without one the text keeps the full width.
+        -- Reserve a 12px gap before Show way; reclaim its space when hidden.
+        local bodyRight = row and row.target and 540 or 616
+        -- The item icon (when known) sits left of the text.
         local icon = row and (row.icon or row.texture)
         if icon and icon ~= "" then
             c.icon:SetTexture(icon); c.icon:Show()
-            c.title:ClearAllPoints(); c.title:SetPoint("TOPLEFT",54,-12); c.title:SetWidth(400)
-            c.body:ClearAllPoints(); c.body:SetPoint("TOPLEFT",54,-38); c.body:SetWidth(480)
+            c.title:ClearAllPoints(); c.title:SetPoint("TOPLEFT",56,-12); c.title:SetWidth(392)
+            c.body:ClearAllPoints(); c.body:SetPoint("TOPLEFT",56,-36); c.body:SetWidth(bodyRight - 56)
         else
             c.icon:Hide()
-            c.title:ClearAllPoints(); c.title:SetPoint("TOPLEFT",16,-12); c.title:SetWidth(440)
-            c.body:ClearAllPoints(); c.body:SetPoint("TOPLEFT",16,-38); c.body:SetWidth(520)
+            c.title:ClearAllPoints(); c.title:SetPoint("TOPLEFT",16,-12); c.title:SetWidth(432)
+            c.body:ClearAllPoints(); c.body:SetPoint("TOPLEFT",16,-36); c.body:SetWidth(bodyRight - 16)
         end
         -- Cards grow with their explanation instead of clipping it (the chain
         -- stripe from #198 grows the card by its own line).
@@ -838,6 +983,7 @@ function U.Render(state)
     for i = math.max(1,#rows)+1,#U.cards do U.cards[i]:Hide() end
     U.child:SetHeight(math.max(1, y))
     renderUpgrades(state)
+    renderGear(state)
     local offset = U.scroll:GetVerticalScroll()
     U.scroll:SetVerticalScroll(math.min(offset,math.max(0,U.child:GetHeight()-U.scroll:GetHeight())))
     renderMilestones(state)
@@ -862,25 +1008,62 @@ function U.Toggle()
 end
 
 -- The compact card stays open across sessions until it is closed with its X.
+local function createCompactRow(h, i)
+    local r = CreateFrame("Frame", nil, h)
+    r:SetSize(330, COMPACT_ROW_H); r:SetPoint("TOPLEFT", 0, -(COMPACT_HEAD_H + (i - 1) * COMPACT_ROW_H))
+    r:EnableMouse(true)
+    r.bg = r:CreateTexture(nil, "BACKGROUND"); r.bg:SetAllPoints()
+    r.stripe = r:CreateTexture(nil, "ARTWORK")
+    r.stripe:SetSize(3, COMPACT_ROW_H); r.stripe:SetPoint("TOPLEFT", 0, 0)
+    r.icon = r:CreateTexture(nil, "ARTWORK")
+    r.icon:SetSize(24, 24); r.icon:SetPoint("TOPLEFT", 10, -5)
+    r.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92); r.icon:Hide()
+    r.title = label(r, "", 12, 40, -3, 280)
+    r.reason = label(r, "", 10, 40, -18, 285); r.reason:SetTextColor(unpack(muted))
+    r.tag = label(r, "", 10, 290, -4, 32); r.tag:SetJustifyH("RIGHT"); r.tag:SetTextColor(unpack(muted))
+    if r.title.SetWordWrap then r.title:SetWordWrap(false); r.reason:SetWordWrap(false) end
+    r:SetScript("OnMouseUp", function(self, mouseButton) U.CompactClick(self.row, mouseButton) end)
+    r:SetScript("OnEnter", function(self)
+        if not (self.row and GameTooltip) then return end
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        for n, line in ipairs(U.CompactTooltipLines(self.row)) do
+            local c = line[2] == "source" and U.theme.textDim or U.theme.text
+            if n == 1 then GameTooltip:SetText(line[1], c[1], c[2], c[3])
+            else GameTooltip:AddLine(line[1], c[1], c[2], c[3], true) end
+        end
+        GameTooltip:Show()
+    end)
+    r:SetScript("OnLeave", function() if GameTooltip then GameTooltip:Hide() end end)
+    -- Rows sit over the card: forward drags so the whole card moves (unless locked).
+    r:RegisterForDrag("LeftButton")
+    r:SetScript("OnDragStart", function() if not NS.settings.compactLocked then h:StartMoving() end end)
+    r:SetScript("OnDragStop", function() h:StopMovingOrSizing(); U.Remember(h, "compactPosition") end)
+    return r
+end
+
 function U.Compact(show)
     if show and not U.hud then
-        local h = panel(UIParent,"ForeverPathCompact",330,52,0.8)
+        local h = panel(UIParent,"ForeverPathCompact",330,COMPACT_HEAD_H + COMPACT_ROW_H + 2,0.8)
         U.hud = h
         draggable(h, "compactPosition")
+        h:SetScript("OnDragStart", function(self) if not NS.settings.compactLocked then self:StartMoving() end end)
         if Minimap then U.Restore(h, "compactPosition", "TOP", Minimap, "BOTTOM", 0, -18)
         else U.Restore(h, "compactPosition", "TOP", UIParent, "TOP", 0, -120) end
-        -- Verdict-colored status stripe: the card's state is readable before any text.
-        h.stripe = h:CreateTexture(nil,"ARTWORK")
-        h.stripe:SetSize(3,52); h.stripe:SetPoint("TOPLEFT",0,0)
-        h.stripe:SetColorTexture(unpack(accent))
-        h.icon = h:CreateTexture(nil,"ARTWORK")
-        h.icon:SetSize(26,26); h.icon:SetPoint("TOPLEFT",12,-8)
-        h.icon:SetTexCoord(0.08,0.92,0.08,0.92); h.icon:Hide()
-        h.title = label(h,"ForeverPath",13,46,-7,200)
-        h.reason = label(h,"",11,46,-25,200); h.reason:SetTextColor(unpack(muted))
-        h.dismiss = button(h,"Hide",254,-6,44,function() local row = U.lastState and U.lastState.rows and U.lastState.rows[1]; if row then NS.DismissTip(row) end end, 20)
-        h.close = button(h,"X",302,-6,22,function() U.Compact(false) end, 20)
-        -- Clicking the card opens the main window; right-click dismisses the tip.
+        h.rows = {}
+        for i = 1, COMPACT_MAX_ROWS do h.rows[i] = createCompactRow(h, i) end
+        -- Aliases for the first (current) row: Celebrate, diagnostics and tests read these.
+        h.stripe, h.icon, h.title, h.reason = h.rows[1].stripe, h.rows[1].icon, h.rows[1].title, h.rows[1].reason
+        label(h, "ForeverPath", U.type.tiny, 8, -3, 120)
+        h.dismiss = button(h, "Hide", 196, -1, 40, function()
+            local row = U.lastState and U.lastState.rows and U.lastState.rows[1]
+            if row then NS.DismissTip(row) end
+        end, 16, { small = true })
+        h.lock = button(h, "Lock", 240, -1, 56, function()
+            NS.settings.compactLocked = not NS.settings.compactLocked
+            NS.Refresh()
+        end, 16, { small = true })
+        h.close = button(h, "X", 302, -1, 22, function() U.Compact(false) end, 16, { small = true })
+        -- Header click opens the main window; right-click dismisses the current tip.
         h:SetScript("OnMouseUp",function(_, mouseButton)
             if mouseButton == "RightButton" then
                 local row = U.lastState and U.lastState.rows and U.lastState.rows[1]
@@ -929,8 +1112,8 @@ function U.RouteImport()
         U.routeWin = f
         f:SetPoint("CENTER"); f:SetFrameStrata("FULLSCREEN_DIALOG"); f:SetClampedToScreen(true)
         table.insert(UISpecialFrames, "ForeverPathRouteImport")
-        label(f, "IMPORT YOUR ROUTE - RestedXP guide format", 16, 18, -20, 600)
-        local hint = label(f, "Paste RegisterGuide blocks with .accept/.turnin/.complete steps. Map-percent .goto works (1411,43.3,68.5). Stays on this computer.", 11, 18, -44, 620)
+        label(f, "IMPORT YOUR ROUTE", U.type.page, 18, -20, 600)
+        local hint = label(f, "Paste RegisterGuide blocks with .accept/.turnin/.complete steps. Map-percent .goto works (1411,43.3,68.5). Stays on this computer.", U.type.small, 18, -44, 620)
         hint:SetTextColor(unpack(muted))
         button(f, "X", 610, -14, 30, function() f:Hide() end)
         local scroll = CreateFrame("ScrollFrame", nil, f, "UIPanelScrollFrameTemplate")
@@ -939,9 +1122,9 @@ function U.RouteImport()
         edit:SetMultiLine(true); edit:SetAutoFocus(false); edit:SetFontObject(ChatFontNormal); edit:SetWidth(590); edit:SetHeight(280)
         edit:SetScript("OnEscapePressed", function() f:Hide() end)
         scroll:SetScrollChild(edit)
-        f.status = label(f, "", 12, 18, -384, 620); f.status:SetTextColor(unpack(U.theme.green))
+        f.status = label(f, "", U.type.body, 18, -384, 620); f.status:SetTextColor(unpack(U.theme.green))
         f.exampleBtn = button(f, "Insert example", 18, -404, 150, function() f.edit:SetText(U.RouteExample()) end)
-        f.importBtn = button(f, "Import", 176, -404, 120, function() NS.ImportRoute(f.edit:GetText()) end)
+        f.importBtn = button(f, "Import", 176, -404, 120, function() NS.ImportRoute(f.edit:GetText()) end, 26, { primary = true })
         f.shareBtn = button(f, "Copy share string", 304, -404, 150, function()
             local shared = NS.Route.EncodeRoute()
             f.edit:SetText(shared or "No custom route to share yet - import one first")
@@ -983,7 +1166,7 @@ function U.Celebrate(questID)
             h.title:SetText(string.format("✓ Done! %d quest%s", quests, quests == 1 and "" or "s"))
             h.title.lastText = nil
         end
-        C_Timer.After(0.8, function()
+        local function restore()
             if U.hero and U.hero.title then
                 U.hero.title:SetTextColor(unpack(U.theme.text))
                 if U.hero.SetBackdropBorderColor then
@@ -991,7 +1174,12 @@ function U.Celebrate(questID)
                 end
                 NS.Refresh()
             end
-        end)
+        end
+        if C_Timer and C_Timer.After then
+            C_Timer.After(0.8, restore)
+        else
+            restore()
+        end
     else
         -- Instant: just refresh to the next step.
         NS.Refresh()
@@ -1059,8 +1247,8 @@ function U.Setup()
         f.step = 1
 
         -- STEP indicator
-        f.stepLabel = label(f,"Step 1 of 3 — Scale",16,22,-16,300)
-        f.stepHint = label(f,"How big should the windows be? You can change this later with /fp settings.",11,22,-40,436)
+        f.stepLabel = label(f,"Step 1 of 3 — Scale",U.type.page,22,-16,300)
+        f.stepHint = label(f,"How big should the windows be? You can change this later with /fp settings.",U.type.small,22,-40,436)
         f.stepHint:SetTextColor(unpack(muted))
 
         -- STEP 1: Scale
@@ -1077,8 +1265,8 @@ function U.Setup()
         end
 
         -- STEP 2: Playstyle
-        f.styleHeader = label(f,"Step 2 of 3 — Playstyle",16,22,-16,300)
-        f.styleHint = label(f,"How do you want to level? You can change this any time.",11,22,-40,436)
+        f.styleHeader = label(f,"Step 2 of 3 — Playstyle",U.type.page,22,-16,300)
+        f.styleHint = label(f,"How do you want to level? You can change this any time.",U.type.small,22,-40,436)
         f.styleHint:SetTextColor(unpack(muted))
         f.choices = {}
         for i, choice in ipairs(CHOICES) do
@@ -1088,21 +1276,22 @@ function U.Setup()
                 NS.settings.setupDone = true
                 U.SetupStep(f, 3)
             end, 50)
-            b.title:ClearAllPoints(); b.title:SetPoint("TOPLEFT", 12, -8); b.title:SetText(choice[2])
-            local desc = label(b,choice[3],10,12,-26,412); desc:SetTextColor(unpack(muted))
+            b.titleAnchor = {"TOPLEFT", 12, -8}
+            b.title:ClearAllPoints(); b.title:SetPoint(unpack(b.titleAnchor)); b.title:SetText(choice[2])
+            local desc = label(b,choice[3],U.type.tiny,12,-26,412); desc:SetTextColor(unpack(muted))
             f.choices[style] = b
         end
 
         -- STEP 3: Welcome / sanity
-        f.welcomeHeader = label(f,"You are all set!",18,22,-16,300)
-        f.welcomeText = label(f,"The small card under your map follows your next step.\nClick it for details, or type /fp for the full window.",12,22,-44,436)
+        f.welcomeHeader = label(f,"You are all set!",U.type.title,22,-16,300)
+        f.welcomeText = label(f,"The small card under your map follows your next step.\nClick it for details, or type /fp for the full window.",U.type.body,22,-44,436)
         f.welcomeText:SetTextColor(unpack(muted))
         f.finishBtn = button(f,"Start playing",22,-100,436,function()
             f:Hide()
             if NS.settings.compact ~= false then U.Compact(true) end
             U.Toggle()
-        end, 36)
-        f.sanity = label(f,"",12,22,-150,436)
+        end, 40, { primary = true })
+        f.sanity = label(f,"",U.type.body,22,-154,436)
 
         U.SetupStep(f, 1)
     end
@@ -1133,10 +1322,12 @@ function U.Diagnostics()
         local f = panel(UIParent,"ForeverPathDiagnostics",660,440); U.report = f
         f:SetPoint("CENTER"); f:SetFrameStrata("FULLSCREEN_DIALOG"); f:SetClampedToScreen(true)
         table.insert(UISpecialFrames,"ForeverPathDiagnostics")
-        label(f,"DIAGNOSTICS - Ctrl/Cmd+A, then copy",16,18,-20,600)
+        label(f,"DIAGNOSTICS",U.type.page,18,-20,300)
+        local hint = label(f,"Ctrl/Cmd+A, then copy — and send us /fp diag output.",U.type.small,18,-44,600)
+        hint:SetTextColor(unpack(muted))
         button(f,"X",610,-14,30,function() f:Hide() end)
         local scroll = CreateFrame("ScrollFrame",nil,f,"UIPanelScrollFrameTemplate")
-        scroll:SetPoint("TOPLEFT",18,-60); scroll:SetPoint("BOTTOMRIGHT",-36,24)
+        scroll:SetPoint("TOPLEFT",18,-68); scroll:SetPoint("BOTTOMRIGHT",-36,24)
         local edit = CreateFrame("EditBox",nil,scroll); f.edit = edit
         edit:SetMultiLine(true); edit:SetAutoFocus(false); edit:SetFontObject(ChatFontNormal); edit:SetWidth(590); edit:SetHeight(340)
         edit:SetScript("OnEscapePressed",function() f:Hide() end)
@@ -1188,7 +1379,8 @@ function U.SyncSettings(f)
                 NS.SetSpec(spec); U.SyncSettings(f)
             end, 26)
             local active = string.lower(NS.settings.spec or "") == string.lower(spec)
-            b.title:SetTextColor(active and unpack(U.theme.accent) or unpack(U.theme.muted))
+            local color = active and U.theme.accent or U.theme.muted
+            b.title:SetTextColor(color[1], color[2], color[3])
             f.specButtons[#f.specButtons + 1] = b
         end
     else
@@ -1204,7 +1396,8 @@ function U.SyncSettings(f)
         end
     end
     local anySpec = #specs == 0 or string.lower(NS.settings.spec or "") == ""
-    f.autoSpec.title:SetTextColor(anySpec and unpack(U.theme.accent) or unpack(U.theme.muted))
+    local color = anySpec and U.theme.accent or U.theme.muted
+    f.autoSpec.title:SetTextColor(color[1], color[2], color[3])
     f.arrow.title:SetText("Arrow: " .. (NS.settings.arrow == false and "off" or "on"))
     f.compact.title:SetText("Tips card: " .. (NS.settings.compact == false and "off" or "on"))
     f.animations.title:SetText("Animations: " .. (NS.settings.animations == false and "off" or "on"))
@@ -1219,11 +1412,11 @@ function U.Settings()
         f:SetFrameStrata("FULLSCREEN_DIALOG"); f:SetPoint("CENTER"); f:SetClampedToScreen(true)
         draggable(f, "settingsPosition")
         table.insert(UISpecialFrames,"ForeverPathSettings")
-        label(f,"Settings",18,22,-20,300)
-        local hint = label(f,"Everything the slash commands do, without the slash.",11,22,-44,380)
+        label(f,"Settings",U.type.page,22,-20,300)
+        local hint = label(f,"Everything the slash commands do, without the slash.",U.type.small,22,-44,380)
         hint:SetTextColor(unpack(muted))
         button(f,"X",430,-14,30,function() f:Hide() end)
-        label(f,"Playstyle",13,22,-76,240)
+        sectionHeader(f,"PLAYSTYLE",22,-76,240)
         f.styles = {}
         for i, style in ipairs(NS.Route.order) do
             local b = button(f, STYLE_LABELS[style] or style, 22 + (i - 1) * 92, -98, 88, function()
@@ -1231,11 +1424,11 @@ function U.Settings()
             end)
             f.styles[style] = b
         end
-        f.specLabel = label(f,"",12,22,-140,436); f.specLabel:SetTextColor(unpack(muted))
+        f.specLabel = label(f,"",U.type.body,22,-140,436); f.specLabel:SetTextColor(unpack(muted))
         f.autoSpec = button(f,"Automatic",22,-160,104,function()
             NS.settings.spec = nil; NS.Refresh(); U.SyncSettings(f)
         end, 26)
-        f.displayLabel = label(f,"Display",13,22,-200,240)
+        f.displayLabel = sectionHeader(f,"DISPLAY",22,-200,240)
         f.arrow = button(f,"Arrow: on",22,-222,104,function()
             NS.settings.arrow = NS.settings.arrow == false
             NS.Refresh(); U.SyncSettings(f)
@@ -1268,7 +1461,7 @@ function U.Settings()
             NS.settings.tipThrottleSeconds = math.min(60, (tonumber(NS.settings.tipThrottleSeconds) or 10) + 5)
             U.SyncSettings(f)
         end, 26)
-        f.positionsLabel = label(f,"Positions",13,22,-368,240)
+        f.positionsLabel = sectionHeader(f,"POSITIONS",22,-368,240)
         f.resetPositions = button(f,"Reset all window positions",22,-390,220,function()
             NS.ResetPositions(); U.SyncSettings(f)
         end, 26)

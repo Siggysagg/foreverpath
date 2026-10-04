@@ -2,6 +2,7 @@
 local _, NS = ...
 local E = {}
 NS.Engine = E
+E.stats = { questGraphBuilds = 0 }
 E.profiles = {
     strength = { label = "Strength", weights = { ITEM_MOD_STRENGTH_SHORT = 1, ITEM_MOD_STAMINA_SHORT = 0.5, RESISTANCE0_NAME = 0.02 } },
     agility = { label = "Agility", weights = { ITEM_MOD_AGILITY_SHORT = 1, ITEM_MOD_STAMINA_SHORT = 0.5, RESISTANCE0_NAME = 0.02 } },
@@ -145,6 +146,51 @@ local function guideTakes(signal, player)
     return false
 end
 
+local questGraphs = setmetatable({}, { __mode = "k" })
+local function questGraph(quests, player)
+    local signature = table.concat({ player.faction or "", player.race or "", player.class or "" }, "\31")
+    local cached = questGraphs[quests]
+    if cached and cached.signature == signature then return cached end
+    E.stats.questGraphBuilds = E.stats.questGraphBuilds + 1
+
+    local children = {}
+    for id, node in pairs(quests) do
+        if allowed(node, player) then
+            for _, required in ipairs(node.requires or {}) do
+                children[required] = children[required] or {}
+                children[required][#children[required] + 1] = id
+            end
+        end
+    end
+    local unlockCounts, chains = {}, {}
+    local function unlocks(id, seen)
+        local count = 0
+        for _, child in ipairs(children[id] or {}) do
+            if not seen[child] then seen[child] = true; count = count + 1 + unlocks(child, seen) end
+        end
+        return count
+    end
+    local function chainOf(id)
+        local titles, seen, current = {}, { [id] = true }, id
+        while #titles < 4 do
+            local kids = children[current] or {}
+            if #kids ~= 1 or seen[kids[1]] then break end
+            current = kids[1]
+            seen[current] = true
+            local node = quests[current]
+            if type(node) ~= "table" then break end
+            titles[#titles + 1] = node.title or ("Quest " .. tostring(node.questID or current))
+        end
+        local kids = children[current] or {}
+        if #titles == 4 and #kids == 1 and not seen[kids[1]] then titles[#titles + 1] = "..." end
+        return titles
+    end
+    cached = { signature = signature, unlockCounts = unlockCounts, chains = chains,
+        unlocks = unlocks, chainOf = chainOf }
+    questGraphs[quests] = cached
+    return cached
+end
+
 function E.NextQuests(quests, player, profile, goalName, signals)
     local completed, inLog, level = player.completed or {}, player.inLog or {}, player.level or 0
     local signalled = signals and signals.quests or {}
@@ -157,41 +203,7 @@ function E.NextQuests(quests, player, profile, goalName, signals)
         if node.zone and questID and guided[questID] then covered[node.zone] = true end
     end
     local goal = E.goals[goalName] or E.goals.balanced
-    local children = {}
-    for id, node in pairs(quests) do
-        if allowed(node, player) then
-            for _, required in ipairs(node.requires or {}) do
-                children[required] = children[required] or {}
-                children[required][#children[required] + 1] = id
-            end
-        end
-    end
-    local function unlocks(id, seen)
-        local count = 0
-        for _, child in ipairs(children[id] or {}) do
-            if not seen[child] then seen[child] = true; count = count + 1 + unlocks(child, seen) end
-        end
-        return count
-    end
-    -- CHAIN-01 (#198): the unbranched continuation after a quest, as titles for the
-    -- card's chain stripe. Stops at a branch (the follow-up count covers those), at a
-    -- cycle, or after four titles - "..." marks a chain that continues past the cap.
-    local function chainOf(startId)
-        local titles, seen = {}, { [startId] = true }
-        local current = startId
-        while #titles < 4 do
-            local kids = children[current] or {}
-            if #kids ~= 1 or seen[kids[1]] then return titles end
-            current = kids[1]
-            seen[current] = true
-            local node = quests[current]
-            if type(node) ~= "table" then return titles end
-            titles[#titles + 1] = node.title or ("Quest " .. tostring(node.questID or current))
-        end
-        local kids = children[current] or {}
-        if #kids == 1 and not seen[kids[1]] then titles[#titles + 1] = "..." end
-        return titles
-    end
+    local graph = questGraph(quests, player)
     local rows = {}
     for id, node in pairs(quests) do
         local questID = node.questID or questNumber(id)
@@ -200,10 +212,12 @@ function E.NextQuests(quests, player, profile, goalName, signals)
             if ready and not completed[questNumber(required)] then ready = false end
         end
         if ready then
+            if graph.unlockCounts[id] == nil then graph.unlockCounts[id] = graph.unlocks(id, {}) end
+            if graph.chains[id] == nil then graph.chains[id] = graph.chainOf(id) end
             local row = { id = "next:" .. questID, questID = questID, title = node.title or ("Quest " .. questID),
-                kind = "quest", reasons = {}, gearGain = 0, unlocks = unlocks(id, {}) }
+                kind = "quest", reasons = {}, gearGain = 0, unlocks = graph.unlockCounts[id] or 0 }
             -- CHAIN-01 (#198): next-title for the "→ Opens:" line and the stripe titles.
-            row.chain = chainOf(id)
+            row.chain = graph.chains[id] or {}
             row.next = row.chain[1]
             local uncompared = false
             for _, reward in ipairs(node.rewards or {}) do
@@ -480,4 +494,40 @@ function E.Streak(questsInARow, diedSinceLastQuest)
     local count = tonumber(questsInARow) or 0
     if count < 2 then return nil end
     return string.format("%d quest%s in a row without dying", count, count == 1 and "" or "s")
+end
+
+
+-- Smart-tips (TIPS-01): contextual hints from player state. Pure — all data
+-- comes from the caller. Returns a list of short hint strings.
+function E.SmartTips(player, nearbyCount, hasCustomRoute)
+    local tips = {}
+    local level = tonumber(player.level) or 0
+    local zone = tostring(player.zone or "")
+    -- Trainer: every 2 levels is a safe general rule for classic-era
+    if level > 0 and level % 2 == 0 then
+        tips[#tips + 1] = "Level " .. level .. " - check your class trainer for new spells"
+    end
+    -- Flight path: a nudge to discover them. The dataset's node count says nothing
+    -- about what this character knows, so no number is claimed here.
+    if NS.Travel and NS.Travel.flights then
+        local nodes = NS.Travel.flights[tostring(player.faction or "")]
+        if type(nodes) == "table" and next(nodes) then
+            tips[#tips + 1] = "Grab new flight paths as you explore - they save travel time"
+        end
+    end
+    -- Nearby: if quest givers are close, mention it
+    if type(nearbyCount) == "number" and nearbyCount > 0 then
+        tips[#tips + 1] = nearbyCount .. " quest giver" .. (nearbyCount == 1 and "" or "s") .. " nearby"
+    end
+    -- Custom route
+    if hasCustomRoute then
+        tips[#tips + 1] = "Your custom route is active - it wins over built-in guides"
+    end
+    -- Level gap warning
+    if level >= 10 and level % 10 == 0 then
+        tips[#tips + 1] = "Milestone level " .. level .. " - consider updating your gear"
+    end
+    -- Cap at 3 tips
+    while #tips > 3 do table.remove(tips) end
+    return tips
 end
