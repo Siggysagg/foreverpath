@@ -644,7 +644,7 @@ local function renderUpgrades(state)
     if #upgrades == 0 then
         U.upgradeHeader:Hide()
         for i = 1, 3 do U.upgradeSlots[i]:Hide(); U.upgradeDetails[i]:Hide() end
-        U.scroll:ClearAllPoints(); U.scroll:SetPoint("TOPLEFT",0,-296)
+        U.scroll:ClearAllPoints(); U.scroll:SetPoint("TOPLEFT",0,-296); U.scroll:SetPoint("BOTTOMRIGHT",-32,10)
         return
     end
     U.upgradeHeader:Show()
@@ -661,7 +661,7 @@ local function renderUpgrades(state)
             U.upgradeSlots[i]:Hide(); U.upgradeDetails[i]:Hide()
         end
     end
-    U.scroll:ClearAllPoints(); U.scroll:SetPoint("TOPLEFT",0,-372)
+    U.scroll:ClearAllPoints(); U.scroll:SetPoint("TOPLEFT",0,-372); U.scroll:SetPoint("BOTTOMRIGHT",-32,10)
 end
 
 -- GEAR tab: every upgrade in state.upgrades (max 8), one multiline fontstring.
@@ -1126,8 +1126,8 @@ function U.RouteImport()
         f.exampleBtn = button(f, "Insert example", 18, -404, 150, function() f.edit:SetText(U.RouteExample()) end)
         f.importBtn = button(f, "Import", 176, -404, 120, function() NS.ImportRoute(f.edit:GetText()) end, 26, { primary = true })
         f.shareBtn = button(f, "Copy share string", 304, -404, 150, function()
-            local shared = NS.Route.EncodeRoute()
-            f.edit:SetText(shared or "No custom route to share yet - import one first")
+            local shared, err = NS.Route.EncodeRoute()
+            f.edit:SetText(shared or err or "No custom route to share yet - import one first")
         end)
         f.removeBtn = button(f, "Remove", 462, -404, 120, function() NS.ImportRoute(nil); f.edit:SetText("") end)
     end

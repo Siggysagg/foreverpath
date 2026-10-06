@@ -106,12 +106,55 @@ local function setText(f, text)
     if N.lastText ~= text then N.lastText = text; f.text:SetText(text) end
 end
 
-local function key(target) return target and string.format("%s:%.1f:%.1f", target.map, target.x, target.y) end
+local function finite(value)
+    return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
+end
+
+local function validTarget(target)
+    return type(target) == "table" and finite(target.map) and finite(target.x) and finite(target.y)
+end
+
+local function waypointValues(point)
+    if type(point) ~= "table" then return nil end
+    local map = point.uiMapID or point.mapID or point.map
+    local position = point.position
+    local x, y = point.x, point.y
+    if type(position) == "table" then
+        x, y = position.x, position.y
+        if type(position.GetXY) == "function" then x, y = position:GetXY() end
+    end
+    return map, x, y
+end
+
+local function sameWaypoint(a, b)
+    if a == b then return true end
+    local am, ax, ay = waypointValues(a)
+    local bm, bx, by = waypointValues(b)
+    return am ~= nil and am == bm and ax == bx and ay == by
+end
+
+local function clearWaypoint()
+    if not (N.waypoint and C_Map and C_Map.GetUserWaypoint and C_Map.ClearUserWaypoint) then
+        N.waypoint = nil
+        return
+    end
+    local ok, current = pcall(C_Map.GetUserWaypoint)
+    if ok and sameWaypoint(current, N.waypoint) then
+        pcall(C_Map.ClearUserWaypoint)
+        if C_SuperTrack and C_SuperTrack.SetSuperTrackedUserWaypoint then
+            pcall(C_SuperTrack.SetSuperTrackedUserWaypoint, false)
+        end
+    end
+    N.waypoint = nil
+end
+
+local function key(target) return string.format("%s:%.6f:%.6f", target.map, target.x, target.y) end
 
 function N.SetTarget(target, title)
     -- A decoded share string can carry a map without x/y; arithmetic on nil would
     -- error every refresh, so anything without usable coordinates is no target.
-    if not target or not target.map or type(target.x) ~= "number" or type(target.y) ~= "number" then
+    if not validTarget(target) then
+        clearWaypoint()
         N.target, N.distanceText = nil, nil
         if N.frame then N.frame:Hide() end
         return
@@ -123,7 +166,9 @@ function N.SetTarget(target, title)
     local x, y = target.x / 100, target.y / 100
     if C_Map and C_Map.SetUserWaypoint and UiMapPoint and UiMapPoint.CreateFromCoordinates then
         pcall(function()
-            C_Map.SetUserWaypoint(UiMapPoint.CreateFromCoordinates(target.map, x, y))
+            local point = UiMapPoint.CreateFromCoordinates(target.map, x, y)
+            C_Map.SetUserWaypoint(point)
+            N.waypoint = point
             if C_SuperTrack and C_SuperTrack.SetSuperTrackedUserWaypoint then C_SuperTrack.SetSuperTrackedUserWaypoint(true) end
         end)
     end

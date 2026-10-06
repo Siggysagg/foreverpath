@@ -104,7 +104,7 @@ local function register(event)
     if not ok then NS.Client.rejectedEvents[#NS.Client.rejectedEvents+1] = event end
 end
 register("ADDON_LOADED")
-events:SetScript("OnEvent",function(_,event,arg1)
+events:SetScript("OnEvent",function(_,event,arg1,arg2)
     if event == "ADDON_LOADED" then
         if arg1 ~= addonName then return end
         ForeverPathDB = type(ForeverPathDB) == "table" and ForeverPathDB or {}
@@ -140,12 +140,16 @@ events:SetScript("OnEvent",function(_,event,arg1)
         NS.Client.MarkLogDirty()  -- one log reread replaces the full per-quest scan (#101)
         return NS.QueueRefresh(true, 1)  -- objective progress ("3/5") must show now, not after the tip delay
     elseif event == "QUEST_ACCEPTED" or event == "QUEST_TURNED_IN" then
-        invalidateDismissedTip(event, arg1)
-        NS.Client.MarkQuestDirty(arg1)  -- arg1 is the quest ID; only it is rechecked (#101)
-        if event == "QUEST_TURNED_IN" and NS.UI and NS.UI.Celebrate then NS.UI.Celebrate(arg1) end
+        -- Forever/Classic prepend the quest-log index to QUEST_ACCEPTED; modern
+        -- clients send only the quest ID. QUEST_TURNED_IN always uses arg1.
+        local questID = event == "QUEST_ACCEPTED" and (arg2 or arg1) or arg1
+        invalidateDismissedTip(event, questID)
+        NS.Client.MarkQuestDirty(questID)  -- only this quest is rechecked (#101)
+        if event == "QUEST_TURNED_IN" and NS.UI and NS.UI.Celebrate then NS.UI.Celebrate(questID) end
         return NS.QueueRefresh(true)  -- the tip-delay setting must not slow quest progress
     elseif event == "GET_ITEM_INFO_RECEIVED" or event == "ITEM_DATA_LOAD_RESULT" then
         if not NS.Client.requested[arg1] then return end
+        if arg2 == false then NS.Client.requested[arg1] = nil end
     end
     -- Only item-data noise waits out the tip delay; zone, combat-end and quest-data events are quick.
     NS.QueueRefresh(not slowEvents[event])
@@ -157,7 +161,6 @@ NS.SETTINGS_VERSION = 1
 
 function NS.MigrateSettings(settings)
     if type(settings) ~= "table" then return settings end
-    local version = tonumber(settings.version) or 0
     -- Migration steps run in order; each bumps the stored version. None yet (v1 is current).
     -- if version < 1 then ... ; settings.version = 1 ; version = 1 end
     settings.version = NS.SETTINGS_VERSION
@@ -166,17 +169,51 @@ end
 
 function NS.ImportRoute(text)
     text = type(text) == "string" and #text > 0 and text or nil
-    NS.settings.customRouteText = text
-    NS.Route.SetCustomRoute(text)
+
+    -- Intentional remove: clear everything
+    if not text then
+        NS.settings.customRouteText = nil
+        NS.Route.SetCustomRoute(nil)
+        local status = "Custom route removed"
+        if NS.UI.routeWin then NS.UI.routeWin.status:SetText(status) end
+        message(status)
+        NS.Refresh()
+        return
+    end
+
+    -- Save current state for potential rollback on failure
+    local prevGuides = NS.Route.customGuides
+    local prevTitles = NS.Route.customTitles
+    local prevMeta = NS.Route.customMeta
+    local prevActive = NS.Route.customActive
+    local prevText = NS.settings.customRouteText
+
+    local imported, importError = NS.Route.SetCustomRoute(text)
     local guides, steps = NS.Route.CustomRouteStats()
     local status
-    if not text then
-        status = "Custom route removed"
+
+    if not imported and importError then
+        -- Strict !FP:1! validation failed: restore previous state
+        NS.Route.customGuides = prevGuides
+        NS.Route.customTitles = prevTitles
+        NS.Route.customMeta = prevMeta
+        NS.Route.customActive = prevActive
+        NS.settings.customRouteText = prevText
+        status = importError
     elseif guides == 0 then
+        -- No valid guides found (RXP parse yielded nothing): restore previous state
+        NS.Route.customGuides = prevGuides
+        NS.Route.customTitles = prevTitles
+        NS.Route.customMeta = prevMeta
+        NS.Route.customActive = prevActive
+        NS.settings.customRouteText = prevText
         status = "No valid guides found in that text - check the format with Insert example"
     else
+        -- Success: persist the new text
+        NS.settings.customRouteText = text
         status = guides .. " guide(s), " .. steps .. " step(s) imported - your route wins"
     end
+
     if NS.UI.routeWin then NS.UI.routeWin.status:SetText(status) end
     message(status)
     NS.Refresh()

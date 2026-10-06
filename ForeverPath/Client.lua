@@ -103,7 +103,7 @@ end
 -- Script CPU time for this addon since load, or nil when the client's script
 -- profiling is off (Classic-era: /console scriptProfile 1, then reload). Throttled
 -- by callers - never called per frame. PERF-03.
-local cpuCheckedAt, cpuAvailable, cpuMissing = 0, nil, false
+local cpuCheckedAt, cpuAvailable = 0, nil
 
 function C.CPUTime()
     -- The profiling APIs can appear after /console scriptProfile 1 + reload, so the
@@ -130,13 +130,26 @@ function C.TrackSession(state)
     if type(xpNow) ~= "number" then return end
     local xpMax = call(UnitXPMax, "player")
     local level = state.level
-    if C.session.level ~= level then
-        C.session.start = GetTime and GetTime() or 0
+    if C.session.start == nil then C.session.start = GetTime and GetTime() or 0 end
+    if C.session.level == nil then
+        C.session.xpBaseline = xpNow
+        C.session.level = level
+        C.session.xpCarried = 0
+    elseif C.session.level ~= level then
+        -- WoW only exposes XP within the current level. Carry the observed remainder
+        -- plus overflow into the new level; unseen multi-level jumps stay unknowable.
+        local endXP = C.session.lastXP or 0
+        if level == C.session.level + 1 and type(C.session.xpMax) == "number" then
+            endXP = C.session.xpMax
+        end
+        local progress = math.max(0, endXP - (C.session.xpBaseline or 0))
+        C.session.xpCarried = (C.session.xpCarried or 0) + progress + xpNow
         C.session.xpBaseline = xpNow
         C.session.level = level
     end
-    C.session.xpGained = math.max(0, xpNow - (C.session.xpBaseline or xpNow))
+    C.session.xpGained = (C.session.xpCarried or 0) + math.max(0, xpNow - (C.session.xpBaseline or xpNow))
     C.session.xpToLevel = (type(xpMax) == "number" and xpMax > xpNow) and (xpMax - xpNow) or nil
+    C.session.lastXP, C.session.xpMax = xpNow, xpMax
     local completed = 0
     for _ in pairs(C.questState and C.questState.completed or {}) do completed = completed + 1 end
     if C.session.questsAtStart == nil then C.session.questsAtStart = completed end
@@ -257,6 +270,7 @@ local function loggedQuestIDs()
     local logTitle = api(C_QuestLog, "GetQuestLogTitle")
     if type(byIndex) ~= "function" and type(logTitle) ~= "function" then return nil end
     local count = call(C_QuestLog and C_QuestLog.GetNumQuestLogEntries or GetNumQuestLogEntries)
+    if type(count) ~= "number" then return nil end
     local ids = {}
     for index = 1, tonumber(count) or 0 do
         local questID = tonumber(call(byIndex, index))

@@ -39,11 +39,15 @@ end
 -- The dungeon playstyle follows RXP's dungeon guide group; every other style excludes it.
 function R.Chain(routes, player, style)
     local wantDungeon = style == "dungeon"
-    local byName, fits = {}, {}
+    local byName, fits, fitSet = {}, {}, {}
     for _, guide in ipairs(routes and routes.guides or {}) do
-        byName[guide.name] = guide
-        if R.TagsMatch(guide.only, player) and (guide.group == "dungeon") == wantDungeon then
-            fits[#fits + 1] = guide
+        -- Notes-only guides carry no steps and must never enter the chain.
+        if guide.steps and guide.steps[1] then
+            byName[guide.name] = guide
+            if R.TagsMatch(guide.only, player) and (guide.group == "dungeon") == wantDungeon then
+                fits[#fits + 1] = guide
+                fitSet[guide] = true
+            end
         end
     end
     -- Dungeon leveling before the first dungeon guide (level < 13): the dungeon
@@ -56,10 +60,11 @@ function R.Chain(routes, player, style)
             if level >= guide.minLevel and level <= guide.maxLevel + 2 then hasFittingDungeon = true break end
         end
         if not hasFittingDungeon then
-            fits = {}
+            fits, fitSet = {}, {}
             for _, guide in ipairs(routes and routes.guides or {}) do
-                if R.TagsMatch(guide.only, player) and guide.group ~= "dungeon" then
+                if guide.steps and guide.steps[1] and R.TagsMatch(guide.only, player) and guide.group ~= "dungeon" then
                     fits[#fits + 1] = guide
+                    fitSet[guide] = true
                 end
             end
         end
@@ -69,6 +74,14 @@ function R.Chain(routes, player, style)
     for _, guide in ipairs(fits) do
         if guide.defaultfor and R.TagsMatch(guide.defaultfor, player) and (not start or guide.minLevel < start.minLevel) then start = guide end
     end
+    if not start then
+        for _, guide in ipairs(fits) do
+            if preferred(guide) and (not start or guide.minLevel < start.minLevel
+                or (guide.minLevel == start.minLevel and guide.name < start.name)) then
+                start = guide
+            end
+        end
+    end
     local chain, seen, current = {}, {}, start
     while current and not seen[current] do
         seen[current] = true
@@ -76,7 +89,8 @@ function R.Chain(routes, player, style)
         local following
         for _, link in ipairs(current.next or {}) do
             local guide = byName[link.to]
-            if not following and guide and R.TagsMatch(link.only, player) and R.TagsMatch(guide.only, player) then following = guide end
+            if not following and guide and fitSet[guide]
+                and R.TagsMatch(link.only, player) and R.TagsMatch(guide.only, player) then following = guide end
         end
         if not following then
             for _, guide in ipairs(fits) do
@@ -94,9 +108,11 @@ end
 local function walker(player, quests)
     local sim = { completed = {}, inLog = {}, ready = {} }
     for key in pairs(sim) do for q, v in pairs(player[key] or {}) do sim[key][q] = v end end
+    local initiallyInLog = {}
+    for q, value in pairs(sim.inLog) do if value then initiallyInLog[q] = true end end
     local requires = {}
     for _, node in pairs(quests) do
-        if node.questID then requires[node.questID] = node.requires end
+        if type(node) == "table" and node.questID then requires[node.questID] = node.requires end
     end
     return function(step)
         local q = step.q
@@ -111,9 +127,11 @@ local function walker(player, quests)
         elseif step.a == "complete" then
             if not sim.inLog[q] or sim.ready[q] then return false end
             sim.ready[q] = true
-        else
-            if not sim.inLog[q] then return false end
+        elseif step.a == "turnin" then
+            if not sim.inLog[q] or (initiallyInLog[q] and not sim.ready[q]) then return false end
             sim.completed[q], sim.inLog[q] = true, nil
+        else
+            return false
         end
         return true
     end
@@ -126,7 +144,7 @@ local function titleOf(routes, quests, q)
     local title = titles[q] or titles[tostring(q)]
     if title then return title end
     for _, node in pairs(quests) do
-        if node.questID == q then return node.title end
+        if type(node) == "table" and node.questID == q then return node.title end
     end
     return "Quest " .. q
 end
@@ -153,7 +171,7 @@ function R.Plan(quests, routes, player, profile, style, limit)
     local level = player.level or 1
     local inRoute, signals, positions = {}, { quests = {} }, {}
     for _, node in pairs(quests) do
-        if node.questID then positions[node.questID] = node.position end
+        if type(node) == "table" and node.questID then positions[node.questID] = node.position end
     end
     local steps, walk = {}, walker(player, quests)
     for _, guide in ipairs(chain) do
@@ -316,14 +334,34 @@ function R.ParseCustomGuides(text)
     return guides, titles
 end
 
+-- !FP:1! import string (#264): versioned, strict and data-only. The legacy FP1@
+-- grammar stays frozen for old strings; only !FP:1! validates hard, fails on
+-- the first bad record and never touches the Lua loader.
+local FP1_PREFIX = "!FP:1!"
+local MAX_TEXT = 65536
+local MAX_GUIDES, MAX_STEPS, MAX_NOTES = 50, 3000, 300
+local MAX_NAME, MAX_TEXT_FIELD = 48, 160
+local TAG_PATTERN = "^[%a!/ ]*$"
+
 -- Store and activate the player's pasted route; custom guides win over imported
 -- guides with the same name, so "my launch route" always beats the shipped one.
 function R.SetCustomRoute(text)
-    if type(text) == "string" and string.sub(text, 1, 4) == "FP1@" then
-        -- A share string: decode it instead of parsing guide text.
+    if type(text) == "string" and string.sub(text, 1, #FP1_PREFIX) == FP1_PREFIX then
+        -- A strict versioned share string: all-or-nothing decode.
+        local guides, titles, meta = R.DecodeRoute(text)
+        if not guides then
+            R.customGuides, R.customTitles, R.customMeta = {}, {}, nil
+            R.customActive = false
+            return nil, titles
+        end
+        R.customGuides, R.customTitles, R.customMeta = guides, titles, meta
+    elseif type(text) == "string" and string.sub(text, 1, 4) == "FP1@" then
+        -- A legacy share string: decode it instead of parsing guide text.
         R.customGuides, R.customTitles = R.DecodeRoute(text) or {}, {}
+        R.customMeta = nil
     else
         R.customGuides, R.customTitles = R.ParseCustomGuides(text)
+        R.customMeta = nil
     end
     R.customActive = #R.customGuides > 0
     return R.customGuides, R.customTitles
@@ -333,6 +371,20 @@ function R.CustomRouteStats()
     local guides, steps = R.customGuides or {}, 0
     for _, guide in ipairs(guides) do steps = steps + #guide.steps end
     return #guides, steps
+end
+
+-- Free-text notes from the imported route for guides covering this level. They are
+-- checklist content only: they never enter the recommendation chain below.
+function R.NotesFor(level)
+    local notes = {}
+    level = tonumber(level) or 1
+    for _, guide in ipairs(R.customGuides or {}) do
+        if guide.notes and #guide.notes > 0
+            and level >= (guide.minLevel or 1) and level <= (guide.maxLevel or 60) then
+            for _, note in ipairs(guide.notes) do notes[#notes + 1] = note end
+        end
+    end
+    return notes
 end
 
 function R.ActiveRoutes()
@@ -377,35 +429,6 @@ local function shareUnescape(text)
     return (string.gsub(text, "\\(.)", function(code) return escapes[code] or ("\\" .. code) end))
 end
 
-local function numberOrEmpty(value)
-    if type(value) == "number" then return string.format("%.3f", value):gsub("0+$", ""):gsub("%.$", "") end
-    return ""
-end
-
-function R.EncodeRoute(guides)
-    guides = guides or R.customGuides
-    if type(guides) ~= "table" then return nil end
-    local parts = {}
-    for _, guide in ipairs(guides) do
-        local nexts = {}
-        for _, link in ipairs(guide.next or {}) do nexts[#nexts + 1] = shareEscape(link.to) end
-        parts[#parts + 1] = table.concat({
-            shareEscape(guide.name), tostring(guide.minLevel or 1), tostring(guide.maxLevel or 60),
-            shareEscape(guide.only), shareEscape(guide.defaultfor), shareEscape(guide.group),
-            table.concat(nexts, ","),
-        }, ";")
-        for _, step in ipairs(guide.steps or {}) do
-            parts[#parts + 1] = "step:" .. table.concat({
-                tostring(step.a), tostring(step.q), tostring(step.level or ""),
-                shareEscape(step.only), tostring(step.map or ""),
-                numberOrEmpty(step.x), numberOrEmpty(step.y), shareEscape(step.npc),
-            }, ";")
-        end
-    end
-    if #parts == 0 then return nil end
-    return SHARE_PREFIX .. table.concat(parts, "|")
-end
-
 local STEP_FIELDS = { "a", "q", "level", "only", "map", "x", "y", "npc" }
 
 -- Split on ';' keeping empty fields (gmatch "[^;]+" would drop them and shift
@@ -416,7 +439,249 @@ local function splitFields(part)
     return fields
 end
 
-function R.DecodeRoute(text)
+local function numberOrEmpty(value)
+    if type(value) == "number" then return string.format("%.3f", value):gsub("0+$", ""):gsub("%.$", "") end
+    return ""
+end
+
+-- !FP:1! helpers: display-string sanitizer, strict integer parsing and a record
+-- splitter that keeps empty segments so corrupt pastes are seen, not skipped.
+
+-- Display strings keep | out of FontStrings: control bytes are dropped and the
+-- escape-decoded | becomes /, so |T...|t and |Hitem...|h can never render.
+local function sanitizeText(text)
+    text = string.gsub(tostring(text or ""), "%c", "")
+    text = string.gsub(text, "|", "/")
+    return text
+end
+
+local function strictInt(value, min, max, what, index)
+    if not string.match(value, "^%d+$") then
+        return nil, string.format("Record %d: %s must be a whole number", index, what)
+    end
+    local n = tonumber(value)
+    if n < min or n > max then
+        return nil, string.format("Record %d: %s must be between %d and %d", index, what, min, max)
+    end
+    return n
+end
+
+-- Split records on literal | keeping empty segments, so a corrupt paste is seen
+-- (and rejected) instead of silently shifted by gmatch's empty-skip.
+local function splitRecords(body)
+    local records, start = {}, 1
+    while true do
+        local sep = string.find(body, "|", start, true)
+        if not sep then
+            records[#records + 1] = string.sub(body, start)
+            break
+        end
+        records[#records + 1] = string.sub(body, start, sep - 1)
+        start = sep + 1
+    end
+    return records
+end
+
+local function strictDecode(text)
+    if #text > MAX_TEXT then return nil, "Route string is too long (over 65536 characters)" end
+    local records = splitRecords(string.sub(text, #FP1_PREFIX + 1))
+    local total = #records
+    if total < 2 then return nil, "Route string is truncated or corrupted (missing end record)" end
+    local declared = string.match(records[total], "^E;(%d+)$")
+    if not declared then return nil, "Route string is truncated or corrupted (missing end record)" end
+    if tonumber(declared) ~= total - 1 then
+        return nil, string.format("Route string is truncated or corrupted (end record says %s, found %d records)",
+            declared, total - 1)
+    end
+    local metaFields = splitFields(records[1])
+    if metaFields[1] ~= "M" or #metaFields ~= 4 then
+        return nil, "Record 1: route must start with the M name record"
+    end
+    local name = sanitizeText(shareUnescape(metaFields[2]))
+    if name == "" then return nil, "Record 1: route name is required" end
+    if #name > MAX_NAME then return nil, string.format("Record 1: route name is too long (max %d)", MAX_NAME) end
+    local meta = { name = name }
+    for _, entry in ipairs({ { "author", 3 }, { "sourceId", 4 } }) do
+        local key, position = entry[1], entry[2]
+        local value = sanitizeText(shareUnescape(metaFields[position]))
+        if #value > MAX_NAME then
+            return nil, string.format("Record 1: route %s is too long (max %d)", key, MAX_NAME)
+        end
+        if value ~= "" then meta[key] = value end
+    end
+    local guides, titles, current, stepCount, noteCount = {}, {}, nil, 0, 0
+    for index = 2, total - 1 do
+        local record = records[index]
+        if record == "" then
+            return nil, string.format("Record %d: empty record (corrupted string)", index)
+        elseif string.sub(record, 1, 5) == "step:" then
+            if not current then return nil, string.format("Record %d: step outside a guide", index) end
+            local fields = splitFields(record)
+            if #fields ~= 8 then return nil, string.format("Record %d: step record is malformed", index) end
+            local action = string.sub(fields[1], 6)
+            if action ~= "accept" and action ~= "turnin" and action ~= "complete" then
+                return nil, string.format("Record %d: unknown step action '%s'", index, sanitizeText(action))
+            end
+            local q, err = strictInt(fields[2], 1, 99999, "quest id", index)
+            if not q then return nil, err end
+            local step = { a = action, q = q }
+            if fields[3] ~= "" then
+                local level, levelErr = strictInt(fields[3], 1, 60, "level", index)
+                if not level then return nil, levelErr end
+                step.level = level
+            end
+            if fields[4] ~= "" then
+                local only = shareUnescape(fields[4])
+                if not string.match(only, TAG_PATTERN) then
+                    return nil, string.format("Record %d: step tag has invalid characters", index)
+                end
+                step.only = only
+            end
+            if fields[5] ~= "" then
+                local map, mapErr = strictInt(fields[5], 1, 99999, "map id", index)
+                if not map then return nil, mapErr end
+                step.map = map
+            end
+            for _, key in ipairs({ "x", "y" }) do
+                local value = fields[key == "x" and 6 or 7]
+                if value ~= "" then
+                    if not string.match(value, "^%d+%.?%d*$") or tonumber(value) > 100 then
+                        return nil, string.format("Record %d: %s must be a number from 0 to 100", index, key)
+                    end
+                    step[key] = tonumber(value)
+                end
+            end
+            if fields[8] ~= "" then
+                local npc = sanitizeText(shareUnescape(fields[8]))
+                if #npc > MAX_TEXT_FIELD then
+                    return nil, string.format("Record %d: npc name is too long (max %d)", index, MAX_TEXT_FIELD)
+                end
+                step.npc = npc
+            end
+            stepCount = stepCount + 1
+            if stepCount > MAX_STEPS then
+                return nil, string.format("Record %d: too many steps (max %d)", index, MAX_STEPS)
+            end
+            current.steps[#current.steps + 1] = step
+        elseif string.sub(record, 1, 6) == "title:" then
+            local fields = splitFields(record)
+            if #fields ~= 2 then return nil, string.format("Record %d: title record is malformed", index) end
+            local q, err = strictInt(string.sub(fields[1], 7), 1, 99999, "quest id", index)
+            if not q then return nil, err end
+            local title = sanitizeText(shareUnescape(fields[2]))
+            if #title > MAX_TEXT_FIELD then
+                return nil, string.format("Record %d: title is too long (max %d)", index, MAX_TEXT_FIELD)
+            end
+            titles[q] = title
+        elseif string.sub(record, 1, 5) == "note:" then
+            if not current then return nil, string.format("Record %d: note outside a guide", index) end
+            local note = sanitizeText(shareUnescape(string.sub(record, 6)))
+            if #note > MAX_TEXT_FIELD then
+                return nil, string.format("Record %d: note is too long (max %d)", index, MAX_TEXT_FIELD)
+            end
+            noteCount = noteCount + 1
+            if noteCount > MAX_NOTES then
+                return nil, string.format("Record %d: too many notes (max %d)", index, MAX_NOTES)
+            end
+            current.notes = current.notes or {}
+            current.notes[#current.notes + 1] = note
+        elseif string.sub(record, 1, 2) == "E;" then
+            return nil, string.format("Record %d: unexpected end record before the last position", index)
+        elseif string.match(record, "^%d") then
+            local fields = splitFields(record)
+            if #fields ~= 7 then return nil, string.format("Record %d: guide record is malformed", index) end
+            local guideName = sanitizeText(shareUnescape(fields[1]))
+            if not string.match(guideName, "^%d+%-%d+ ") then
+                return nil, string.format("Record %d: guide name must start with '<min>-<max> '", index)
+            end
+            if #guideName > MAX_NAME then
+                return nil, string.format("Record %d: guide name is too long (max %d)", index, MAX_NAME)
+            end
+            local minLevel, maxLevel = tonumber(fields[2]), tonumber(fields[3])
+            if not minLevel or not maxLevel or string.find(fields[2] .. fields[3], "[^%d]")
+                or minLevel < 1 or minLevel > 999 or maxLevel < 1 or maxLevel > 999 then
+                return nil, string.format("Record %d: guide levels must be numbers", index)
+            end
+            if minLevel > maxLevel then
+                return nil, string.format("Record %d: guide min level exceeds max level", index)
+            end
+            local guide = { name = guideName, minLevel = minLevel, maxLevel = maxLevel, next = {}, steps = {} }
+            for _, key in ipairs({ "only", "defaultfor", "group" }) do
+                local tag = shareUnescape(fields[key == "only" and 4 or key == "defaultfor" and 5 or 6])
+                if tag ~= "" then
+                    if not string.match(tag, TAG_PATTERN) then
+                        return nil, string.format("Record %d: guide tag has invalid characters", index)
+                    end
+                    guide[key] = tag
+                end
+            end
+            for to in string.gmatch(fields[7], "[^,]+") do
+                local link = sanitizeText(shareUnescape(to))
+                if #link > MAX_NAME then
+                    return nil, string.format("Record %d: next link name is too long (max %d)", index, MAX_NAME)
+                end
+                guide.next[#guide.next + 1] = { to = link }
+            end
+            guides[#guides + 1] = guide
+            if #guides > MAX_GUIDES then
+                return nil, string.format("Record %d: too many guides (max %d)", index, MAX_GUIDES)
+            end
+            current = guide
+        else
+            return nil, string.format("Record %d was made by a newer version of ForeverPath", index)
+        end
+    end
+    return guides, titles, meta
+end
+
+-- Encode the active custom route as a versioned !FP:1! string: an M header, then
+-- guides with their steps and notes, then quest titles, then the E record count
+-- that catches truncated pastes. Legacy FP1@ is decode-only.
+function R.EncodeRoute(guides, titles, meta)
+    guides = guides or R.customGuides
+    if type(guides) ~= "table" or #guides == 0 then return nil end
+    titles = titles or R.customTitles
+    meta = meta or R.customMeta or { name = "My route" }
+    local records, count = {}, 0
+    local function emit(record)
+        records[#records + 1] = record
+        count = count + 1
+    end
+    emit("M;" .. table.concat({
+        shareEscape(meta.name or "My route"), shareEscape(meta.author or ""), shareEscape(meta.sourceId or ""),
+    }, ";"))
+    for _, guide in ipairs(guides) do
+        local nexts = {}
+        for _, link in ipairs(guide.next or {}) do nexts[#nexts + 1] = shareEscape(link.to) end
+        emit(table.concat({
+            shareEscape(guide.name), tostring(guide.minLevel or 1), tostring(guide.maxLevel or 60),
+            shareEscape(guide.only), shareEscape(guide.defaultfor), shareEscape(guide.group),
+            table.concat(nexts, ","),
+        }, ";"))
+        for _, step in ipairs(guide.steps or {}) do
+            emit("step:" .. table.concat({
+                tostring(step.a), tostring(step.q), tostring(step.level or ""),
+                shareEscape(step.only), tostring(step.map or ""),
+                numberOrEmpty(step.x), numberOrEmpty(step.y), shareEscape(step.npc),
+            }, ";"))
+        end
+        for _, note in ipairs(guide.notes or {}) do emit("note:" .. shareEscape(note)) end
+    end
+    local questIds = {}
+    for q in pairs(titles or {}) do questIds[#questIds + 1] = q end
+    table.sort(questIds, function(a, b) return tostring(a) < tostring(b) end)
+    for _, q in ipairs(questIds) do emit("title:" .. tostring(q) .. ";" .. shareEscape(titles[q])) end
+    emit("E;" .. count)
+    local encoded = FP1_PREFIX .. table.concat(records, "|")
+    -- Never hand out a string our own importer would reject (RXP parsing is more lenient).
+    local ok, err = strictDecode(encoded)
+    if not ok then return nil, "Cannot share this route: " .. tostring(err) end
+    return encoded
+end
+
+-- Legacy FP1@ decode, frozen (SHARE-01/SEC-01): no titles, no validation beyond
+-- the known-action filter, silently drops bad steps. Kept only for old strings.
+local function legacyDecode(text)
     if type(text) ~= "string" or string.sub(text, 1, #SHARE_PREFIX) ~= SHARE_PREFIX then return nil end
     local guides = {}
     local current
@@ -456,4 +721,16 @@ function R.DecodeRoute(text)
         end
     end
     return guides
+end
+
+-- Dispatch by prefix: legacy FP1@ (frozen), strict !FP:1! (guides, titles, meta or
+-- nil, errorMessage), a newer !FP:n! (refused), anything else is not a share string.
+function R.DecodeRoute(text)
+    if type(text) ~= "string" then return nil end
+    if string.sub(text, 1, #SHARE_PREFIX) == SHARE_PREFIX then return legacyDecode(text) end
+    if string.sub(text, 1, #FP1_PREFIX) == FP1_PREFIX then return strictDecode(text) end
+    if string.match(text, "^!FP:%d+!") then
+        return nil, "This route was made by a newer version of ForeverPath"
+    end
+    return nil
 end

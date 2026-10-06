@@ -110,8 +110,15 @@ local function questNumber(ref)
     return tonumber(string.match(tostring(ref or ""), "(%d+)$"))
 end
 
+local function resultLimit(value, fallback)
+    value = tonumber(value)
+    if not value or value ~= value or value == math.huge or value == -math.huge then return fallback end
+    return math.max(0, math.floor(value))
+end
+
 local RACE_ALIAS = { SCOURGE = "UNDEAD" }
 local function allowed(node, player)
+    if type(node) ~= "table" then return false end
     local myRace = string.upper(player.race or "")
     myRace = RACE_ALIAS[myRace] or myRace
     local listed, match = false, false
@@ -153,12 +160,17 @@ local function questGraph(quests, player)
     if cached and cached.signature == signature then return cached end
     E.stats.questGraphBuilds = E.stats.questGraphBuilds + 1
 
-    local children = {}
+    local children, nodes = {}, {}
     for id, node in pairs(quests) do
-        if allowed(node, player) then
+        local questID = type(node) == "table" and questNumber(node.questID or id)
+        if questID and allowed(node, player) then
+            nodes[questID] = node
             for _, required in ipairs(node.requires or {}) do
-                children[required] = children[required] or {}
-                children[required][#children[required] + 1] = id
+                required = questNumber(required)
+                if required then
+                    children[required] = children[required] or {}
+                    children[required][#children[required] + 1] = questID
+                end
             end
         end
     end
@@ -177,7 +189,7 @@ local function questGraph(quests, player)
             if #kids ~= 1 or seen[kids[1]] then break end
             current = kids[1]
             seen[current] = true
-            local node = quests[current]
+            local node = nodes[current]
             if type(node) ~= "table" then break end
             titles[#titles + 1] = node.title or ("Quest " .. tostring(node.questID or current))
         end
@@ -192,6 +204,7 @@ local function questGraph(quests, player)
 end
 
 function E.NextQuests(quests, player, profile, goalName, signals)
+    quests = type(quests) == "table" and quests or {}
     local completed, inLog, level = player.completed or {}, player.inLog or {}, player.level or 0
     local signalled = signals and signals.quests or {}
     -- Generated data uses string keys ("4641"); accept numbers too.
@@ -199,25 +212,27 @@ function E.NextQuests(quests, player, profile, goalName, signals)
     -- A zone counts as guide-covered when any of its quests appears in a guide; only there is "not taken" a signal.
     local covered = {}
     for id, node in pairs(quests) do
-        local questID = node.questID or questNumber(id)
-        if node.zone and questID and guided[questID] then covered[node.zone] = true end
+        if type(node) == "table" then
+            local questID = node.questID or questNumber(id)
+            if node.zone and questID and guided[questID] then covered[node.zone] = true end
+        end
     end
     local goal = E.goals[goalName] or E.goals.balanced
     local graph = questGraph(quests, player)
     local rows = {}
     for id, node in pairs(quests) do
-        local questID = node.questID or questNumber(id)
+        local questID = type(node) == "table" and (node.questID or questNumber(id))
         local ready = questID and allowed(node, player) and not completed[questID] and (node.minLevel or 0) <= level
-        for _, required in ipairs(node.requires or {}) do
+        for _, required in ipairs(type(node) == "table" and node.requires or {}) do
             if ready and not completed[questNumber(required)] then ready = false end
         end
         if ready then
-            if graph.unlockCounts[id] == nil then graph.unlockCounts[id] = graph.unlocks(id, {}) end
-            if graph.chains[id] == nil then graph.chains[id] = graph.chainOf(id) end
+            if graph.unlockCounts[questID] == nil then graph.unlockCounts[questID] = graph.unlocks(questID, {}) end
+            if graph.chains[questID] == nil then graph.chains[questID] = graph.chainOf(questID) end
             local row = { id = "next:" .. questID, questID = questID, title = node.title or ("Quest " .. questID),
-                kind = "quest", reasons = {}, gearGain = 0, unlocks = graph.unlockCounts[id] or 0 }
+                kind = "quest", reasons = {}, gearGain = 0, unlocks = graph.unlockCounts[questID] or 0 }
             -- CHAIN-01 (#198): next-title for the "→ Opens:" line and the stripe titles.
-            row.chain = graph.chains[id] or {}
+            row.chain = graph.chains[questID] or {}
             row.next = row.chain[1]
             local uncompared = false
             for _, reward in ipairs(node.rewards or {}) do
@@ -299,14 +314,19 @@ function E.ChainInfo(quests, questID)
     local out = { unlocks = 0, next = nil }
     local want = tonumber(questID)
     if type(quests) ~= "table" or not want then return out end
-    local children, startId = {}, nil
+    local children, nodes, startId = {}, {}, nil
     for id, node in pairs(quests) do
         if type(node) == "table" then
-            if tonumber(node.questID or questNumber(id)) == want then startId = id end
+            local nodeID = questNumber(node.questID or id)
+            if nodeID then nodes[nodeID] = node end
+            if nodeID == want then startId = nodeID end
             if type(node.requires) == "table" then
                 for _, required in ipairs(node.requires) do
-                    children[required] = children[required] or {}
-                    children[required][#children[required] + 1] = id
+                    required = questNumber(required)
+                    if required and nodeID then
+                        children[required] = children[required] or {}
+                        children[required][#children[required] + 1] = nodeID
+                    end
                 end
             end
         end
@@ -323,7 +343,7 @@ function E.ChainInfo(quests, questID)
     out.unlocks = count(startId)
     local bestKey, bestTitle
     for _, child in ipairs(children[startId] or {}) do
-        local node = quests[child]
+        local node = nodes[child]
         if type(node) == "table" and node.title then
             local key = tonumber(node.questID or questNumber(child)) or math.huge
             if not bestKey or key < bestKey then bestKey, bestTitle = key, node.title end
@@ -362,7 +382,7 @@ function E.NearbyGivers(quests, mapID, playerX, playerY, limit)
         if a.distance == b.distance then return a.questID < b.questID end
         return a.distance < b.distance
     end)
-    limit = limit or 5
+    limit = resultLimit(limit, 5)
     while #out > limit do table.remove(out) end
     return out
 end
@@ -414,7 +434,7 @@ function E.BestUpgrades(available, player, profile, limit)
         if a.delta == b.delta then return a.slot < b.slot end
         return a.delta > b.delta
     end)
-    limit = limit or 3
+    limit = resultLimit(limit, 3)
     while #out > limit do table.remove(out) end
     return out
 end
